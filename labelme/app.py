@@ -192,6 +192,7 @@ class MainWindow(QtWidgets.QMainWindow):
         funcPanLayout.setContentsMargins(0, 0, 0, 0)
         funcPanLayout.setSpacing(0)
         funcPanLayout.addWidget(QtWidgets.QPushButton("Detect KeyPoint"))
+        #TODO Copy All Label要想办法写出来
         funcPanLayout.addWidget(QtWidgets.QPushButton("Copy All Label"))
         self.functionPannelWidget = QtWidgets.QWidget()
         self.functionPannelWidget.setLayout(funcPanLayout)
@@ -199,6 +200,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
         #PatientInfo Dock
+        #TODO Info Dock组件要写出来
         self.info_dock = QtWidgets.QDockWidget(self.tr("Patient Info"), self)
         self.info_dock.setObjectName("Patient Info")
         patientInfoWidget = QtWidgets.QWidget()
@@ -211,6 +213,8 @@ class MainWindow(QtWidgets.QMainWindow):
             double_click=self._config["canvas"]["double_click"],
             num_backups=self._config["canvas"]["num_backups"],
         )
+
+        #TODO Canvas2的功能只有显示，没有标注，看看怎么从canvas继承还是重写
         self.canvas2 = self.labelList.canvas = Canvas(
             epsilon=self._config["epsilon"],
             double_click=self._config["canvas"]["double_click"],
@@ -265,6 +269,7 @@ class MainWindow(QtWidgets.QMainWindow):
         splitArea.addWidget(splitArea_canvas)
         splitArea.addWidget(self.functionPannelWidget)
         #这个要改一下和窗口挂钩的比例，写死会不会有bug
+        # TODO(LZX): 调整窗口比例
         splitArea.setSizes([400, 1])
 
         #再把画布区域分成两个窗口
@@ -310,12 +315,28 @@ class MainWindow(QtWidgets.QMainWindow):
             "quit",
             self.tr("Quit application"),
         )
-        open_ = action(
-            self.tr("&Open"),
+        #TODO 加入按钮还要加入功能，同时确定按钮好不好用,看看open对应的函数是怎么写的
+        #openRGB只显示在左边，depth显示在右边，both都显示
+        openRGB_ = action(
+            self.tr("&Open RGB"),
             self.openFile,
-            shortcuts["open"],
+            shortcuts["open_RGB"],
             "open",
-            self.tr("Open image or label file"),
+            self.tr("Open RGB image"),
+        )
+        openDepth_ = action(
+            self.tr("&Open Depth"),
+            self.openDirDialog,
+            shortcuts["open_Depth"],
+            "open",
+            self.tr("Open depth image"),
+        )
+        openBoth_ = action(
+            self.tr("&Open Both"),
+            self.openDirDialog,
+            shortcuts["open_Both"],
+            "open",
+            self.tr("&Open both RGB&depth"),
         )
         opendir = action(
             self.tr("&Open Dir"),
@@ -678,7 +699,9 @@ class MainWindow(QtWidgets.QMainWindow):
             changeOutputDir=changeOutputDir,
             save=save,
             saveAs=saveAs,
-            open=open_,
+            openRGB=openRGB_,
+            openDepth=openDepth_,
+            openBoth=openBoth_,
             close=close,
             deleteFile=deleteFile,
             toggleKeepPrevMode=toggle_keep_prev_mode,
@@ -708,7 +731,7 @@ class MainWindow(QtWidgets.QMainWindow):
             zoomActions=zoomActions,
             openNextImg=openNextImg,
             openPrevImg=openPrevImg,
-            fileMenuActions=(open_, opendir, save, saveAs, close, quit),
+            fileMenuActions=(openRGB_,openDepth_,openBoth_, opendir, save, saveAs, close, quit),
             tool=(),
             # XXX: need to add some actions here to activate the shortcut
             editMenu=(
@@ -769,7 +792,9 @@ class MainWindow(QtWidgets.QMainWindow):
         utils.addActions(
             self.menus.file,
             (
-                open_,
+                openRGB_,
+                openDepth_,
+                openBoth_,
                 openNextImg,
                 openPrevImg,
                 opendir,
@@ -828,7 +853,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tools = self.toolbar("Tools")
         # Menu buttons on Left
         self.actions.tool = (
-            open_,
+            openRGB_,
+            openDepth_,
+            openBoth_,
             opendir,
             openNextImg,
             openPrevImg,

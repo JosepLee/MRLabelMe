@@ -74,7 +74,9 @@ canvas:
 
 shortcuts:
   close: Ctrl+W
-  open: Ctrl+O
+  open_RGB: Ctrl+O
+  open_Depth: Ctrl+Alt+D
+  open_Both: Ctrl+B
   open_dir: Ctrl+U
   quit: Ctrl+Q
   save: Ctrl+S
