@@ -1,0 +1,403 @@
+{
+  "version": "5.0.1",
+  "flags": {
+    "__ignore__": true,
+    "occlusion": false,
+    "no_occlusion": false
+  },
+  "shapes_rgb": [
+    {
+      "label": "HEADTOP",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "NECK",
+      "points": [
+        [
+          386.830985915493,
+          388.7323943661972
+        ]
+      ],
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "SHOULDER_LEFT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "SHOULDER_RIGHT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "ELBOW_LEFT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "ELBOW_RIGHT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "WRIST_LEFT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "WRIST_RIGHT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "HIP_LEFT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "HIP_RIGHT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "GROIN",
+      "points": [
+        [
+          755.5633802816901,
+          349.29577464788736
+        ]
+      ],
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "KNEE_LEFT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "KNEE_RIGHT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "ANKLE_LEFT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "ANKLE_RIGHT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "EYE_LEFT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "EYE_RIGHT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "EAR_LEFT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "EAR_RIGHT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "NOSE",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "BIGTOE_LEFT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "BIGTOE_RIGHT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "SMALLTOE_LEFT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "SMALLTOE_RIGHT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "HEEL_LEFT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "HEEL_RIGH",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    }
+  ],
+  "shapes_depth": [
+    {
+      "label": "HEADTOP",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "NECK",
+      "points": [
+        [
+          365.4225352112677,
+          366.19718309859155
+        ]
+      ],
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "SHOULDER_LEFT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "SHOULDER_RIGHT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "ELBOW_LEFT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "ELBOW_RIGHT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "WRIST_LEFT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "WRIST_RIGHT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "HIP_LEFT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "HIP_RIGHT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "GROIN",
+      "points": [
+        [
+          755.5633802816901,
+          349.29577464788736
+        ]
+      ],
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "KNEE_LEFT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "KNEE_RIGHT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "ANKLE_LEFT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "ANKLE_RIGHT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "EYE_LEFT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "EYE_RIGHT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "EAR_LEFT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "EAR_RIGHT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "NOSE",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "BIGTOE_LEFT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "BIGTOE_RIGHT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "SMALLTOE_LEFT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "SMALLTOE_RIGHT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "HEEL_LEFT",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    },
+    {
+      "label": "HEEL_RIGH",
+      "points": null,
+      "group_id": null,
+      "shape_type": "point",
+      "flags": {}
+    }
+  ],
+  "imagePath": "patient000_20220718-134422-9303_color.jpg",
+  "patientHeight": "188",
+  "patientWeight": "23",
+  "patientPose": "HFS_Superman",
+  "calibrationExist": true,
+  "creator": "default",
+  "reviewer": null
+}

@@ -1,4 +1,0 @@
-__ignore__
-occlusion
-no_occlusion
-

@@ -4,7 +4,7 @@ from qtpy import QtWidgets
 
 
 class ZoomWidget(QtWidgets.QSpinBox):
-    def __init__(self, value=100):
+    def __init__(self, value=71):
         super(ZoomWidget, self).__init__()
         self.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
         self.setRange(1, 1000)

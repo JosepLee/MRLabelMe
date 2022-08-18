@@ -1,15 +1,20 @@
 # -*- coding: utf-8 -*-
 
+from fileinput import filename
 import functools
 import html
+import json
 import math
 import os
 import os.path as osp
 import re
 import webbrowser
+import numpy as np
+from PIL import Image
 
 import imgviz
 import natsort
+import cv2
 from qtpy import QtCore
 from qtpy.QtCore import Qt
 from qtpy import QtGui
@@ -17,6 +22,7 @@ from qtpy import QtWidgets
 
 from labelme import __appname__
 from labelme import PY2
+
 
 from . import utils
 from labelme.config import get_config
@@ -33,7 +39,7 @@ from labelme.widgets import LabelListWidgetItem
 from labelme.widgets import ToolBar
 from labelme.widgets import UniqueLabelQListWidget
 from labelme.widgets import ZoomWidget
-
+from labelme.widgets import PatientInfo
 # FIXME
 # - [medium] Set max zoom value to something big enough for FitWidth/Window
 
@@ -47,7 +53,7 @@ LABEL_COLORMAP = imgviz.label_colormap()
 #MainWindow类，是labelme的主窗口
 class MainWindow(QtWidgets.QMainWindow):
 
-    #三个暂时不明的参数？？？
+    #控制缩放模式的字典变量，参考self.scaler
     FIT_WINDOW, FIT_WIDTH, MANUAL_ZOOM = 0, 1, 2
 
     #类构造函数，输入参数config，filename，output，output_file,output_dir,都来自与运行初始化参数
@@ -70,7 +76,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if config is None:
             config = get_config()
         self._config = config
-
+        self.nowFocus='RGB'
         # set default shape colors
         Shape.line_color = QtGui.QColor(*self._config["shape"]["line_color"])
         Shape.fill_color = QtGui.QColor(*self._config["shape"]["fill_color"])
@@ -99,7 +105,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._noSelectionSlot = False
 
         self._copied_shapes = None
-
+        self.saveMode='Both'
         # Main widgets and related state.
         #指向另一个文件，此类实例化的应该是主要窗口部件
         # widgets意思是窗口小部件
@@ -114,7 +120,8 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
         #初始化labellist小部件，label list对应的是右边的一个小窗体
-        self.labelList = LabelListWidget()
+        self.labelListColor = LabelListWidget()
+        self.labelListDepth = LabelListWidget()
         #看名称应该是上一个打开的目录
         self.lastOpenDir = None
 
@@ -129,22 +136,35 @@ class MainWindow(QtWidgets.QMainWindow):
         self.flag_widget.itemChanged.connect(self.setDirty)
 
         #labellist相关参数
-        self.labelList.itemSelectionChanged.connect(self.labelSelectionChanged)
+        self.labelListColor.itemSelectionChanged.connect(self.labelSelectionChangedRGB)
 
-        self.labelList.itemDoubleClicked.connect(self.editLabel)#editlabel是双击事件，双击编辑label，labellist是dock元件之一
+        self.labelListColor.itemDoubleClicked.connect(self.editLabel)#editlabel是双击事件，双击编辑label，labellist是dock元件之一
 
-        self.labelList.itemChanged.connect(self.labelItemChanged)
+        self.labelListColor.itemChanged.connect(self.labelItemChangedRGB)
 
-        self.labelList.itemDropped.connect(self.labelOrderChanged)
+        self.labelListColor.itemDropped.connect(self.labelOrderChangedRGB)
 
+        self.labelListDepth.itemSelectionChanged.connect(self.labelSelectionChangedDepth)
 
+        self.labelListDepth.itemDoubleClicked.connect(self.editLabel)#editlabel是双击事件，双击编辑label，labellist是dock元件之一
+
+        self.labelListDepth.itemChanged.connect(self.labelItemChangedDepth)
+
+        self.labelListDepth.itemDropped.connect(self.labelOrderChangedDepth)
 
         #dock相关参数，dock是什么？dock是围绕在主窗口周围的小部件的名称：英文dock：码头，停靠
-        self.shape_dock = QtWidgets.QDockWidget(
-            self.tr("Polygon Labels"), self
+        self.shape_dockColor = QtWidgets.QDockWidget(
+            self.tr("RGB Polygon Labels"), self
         )
-        self.shape_dock.setObjectName("Labels")
-        self.shape_dock.setWidget(self.labelList)
+        self.shape_dockColor.setObjectName("Labels")
+        self.shape_dockColor.setWidget(self.labelListColor)
+
+
+        self.shape_dockDepth = QtWidgets.QDockWidget(
+            self.tr("Depth Polygon Labels"), self
+        )
+        self.shape_dockDepth.setObjectName("Labels")
+        self.shape_dockDepth.setWidget(self.labelListDepth)
 
         self.uniqLabelList = UniqueLabelQListWidget()
         self.uniqLabelList.setToolTip(
@@ -153,6 +173,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 "Press 'Esc' to deselect."
             )
         )
+
         if self._config["labels"]:
             for label in self._config["labels"]:
                 item = self.uniqLabelList.createItemFromLabel(label)
@@ -160,7 +181,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 rgb = self._get_rgb_by_label(label)
                 self.uniqLabelList.setItemLabel(item, label, rgb)
 
-        #label dock组件注册
+        #label list dock组件注册
         self.label_dock = QtWidgets.QDockWidget(self.tr("Label List"), self)
         self.label_dock.setObjectName("Label List")
         self.label_dock.setWidget(self.uniqLabelList)
@@ -193,63 +214,73 @@ class MainWindow(QtWidgets.QMainWindow):
         funcPanLayout.setSpacing(0)
         funcPanLayout.addWidget(QtWidgets.QPushButton("Detect KeyPoint"))
         #TODO Copy All Label要想办法写出来
-        funcPanLayout.addWidget(QtWidgets.QPushButton("Copy All Label"))
+        copyLabels=QtWidgets.QPushButton("Copy All Points")
+        copyLabels.clicked.connect(self.copyAllShapes)
+        copyLabels.setCheckable(True)
+        funcPanLayout.addWidget(copyLabels)
         self.functionPannelWidget = QtWidgets.QWidget()
         self.functionPannelWidget.setLayout(funcPanLayout)
-
 
 
         #PatientInfo Dock
         #TODO Info Dock组件要写出来
         self.info_dock = QtWidgets.QDockWidget(self.tr("Patient Info"), self)
         self.info_dock.setObjectName("Patient Info")
-        patientInfoWidget = QtWidgets.QWidget()
+        self.patientINFO=PatientInfo.PatientInfoWidget()
+        patientInfoWidget = self.patientINFO.PatientInfoDock()
+
         self.info_dock.setWidget(patientInfoWidget)
 
 
-        #canvas，画布，帆布：对应的是整个界面还是说图片？
-        self.canvas = self.labelList.canvas = Canvas(
+        #canvasLeft，画布，帆布：对应的是整个界面还是说图片？
+        self.canvasLeft = self.labelListColor.canvas = Canvas(
             epsilon=self._config["epsilon"],
-            double_click=self._config["canvas"]["double_click"],
-            num_backups=self._config["canvas"]["num_backups"],
+            double_click=self._config["canvasLeft"]["double_click"],
+            num_backups=self._config["canvasLeft"]["num_backups"],
         )
 
         #TODO Canvas2的功能只有显示，没有标注，看看怎么从canvas继承还是重写
-        self.canvas2 = self.labelList.canvas = Canvas(
+        self.canvasRight = self.labelListDepth.canvas = Canvas(
             epsilon=self._config["epsilon"],
-            double_click=self._config["canvas"]["double_click"],
-            num_backups=self._config["canvas"]["num_backups"],
+            double_click=self._config["canvasRight"]["double_click"],
+            num_backups=self._config["canvasRight"]["num_backups"],
         )
-        self.canvas.zoomRequest.connect(self.zoomRequest)
-        self.canvas2.zoomRequest.connect(self.zoomRequest)
+        self.canvasLeft.zoomRequest.connect(self.zoomRequest)
+        self.canvasRight.zoomRequest.connect(self.zoomRequest)
         #Qt.Vertical
         splitArea = QtWidgets.QSplitter(Qt.Vertical)
-        splitArea_canvas = QtWidgets.QSplitter()
+        splitArea_canvas = QtWidgets.QSplitter(Qt.Vertical)
         # scrollArea = QtWidgets.QScrollArea()
-        # scrollArea.setWidget(self.canvas)
+        # scrollArea.setWidget(self.canvasLeft)
         # scrollArea.setWidgetResizable(True)
         # self.scrollBars = {
         #     Qt.Vertical: scrollArea.verticalScrollBar(),
         #     Qt.Horizontal: scrollArea.horizontalScrollBar(),
         # }
-        self.canvas.scrollRequest.connect(self.scrollRequest)
+        self.canvasLeft.scrollRequest.connect(self.scrollRequest)
 
-        self.canvas.newShape.connect(self.newShape)
-        self.canvas.shapeMoved.connect(self.setDirty)
-        self.canvas.selectionChanged.connect(self.shapeSelectionChanged)
-        self.canvas.drawingPolygon.connect(self.toggleDrawingSensitive)
+        self.canvasLeft.newShape.connect(self.newShapeRGB)
+        self.canvasLeft.shapeMoved.connect(self.setDirty)
+
+        self.canvasLeft.selectionChanged.connect(self.shapeSelectionChangedColor)
+        self.canvasLeft.focusChanged.connect(self.focusChangedColor)
+        self.canvasLeft.drawingPolygon.connect(self.toggleDrawingSensitive)
 
         #Canvas2是深度画布
-        self.canvas2.scrollRequest.connect(self.scrollRequest)
+        self.canvasRight.scrollRequest.connect(self.scrollRequest)
 
-        self.canvas2.newShape.connect(self.newShape)
-        self.canvas2.shapeMoved.connect(self.setDirty)
-        self.canvas2.selectionChanged.connect(self.shapeSelectionChanged)
-        self.canvas2.drawingPolygon.connect(self.toggleDrawingSensitive)
+        self.canvasRight.newShape.connect(self.newShapeDepth)
+        self.canvasRight.shapeMoved.connect(self.setDirty)
+        self.canvasRight.selectionChanged.connect(self.shapeSelectionChangedDepth)
+        self.canvasRight.focusChanged.connect(self.focusChangedDepth)
+        self.canvasRight.drawingPolygon.connect(self.toggleDrawingSensitive)
         # self.setCentralWidget(scrollArea)
 
+        # uniLabelList
+        self.uniqLabelList.currentItemChanged.connect(self.itemChangedUniqLabelList)
+
         scrollArea1 = QtWidgets.QScrollArea()
-        scrollArea1.setWidget(self.canvas)
+        scrollArea1.setWidget(self.canvasLeft)
         scrollArea1.setWidgetResizable(True)
         self.scrollBars = {
             Qt.Vertical: scrollArea1.verticalScrollBar(),
@@ -257,7 +288,7 @@ class MainWindow(QtWidgets.QMainWindow):
         }
 
         scrollArea2 = QtWidgets.QScrollArea()
-        scrollArea2.setWidget(self.canvas2)
+        scrollArea2.setWidget(self.canvasRight)
         scrollArea2.setWidgetResizable(True)
         self.scrollBars2 = {
             Qt.Vertical: scrollArea2.verticalScrollBar(),
@@ -281,7 +312,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         #这块加入了四个dock，同时再加入dock应该就是从这里加入
         features = QtWidgets.QDockWidget.DockWidgetFeatures()
-        for dock in ["flag_dock", "label_dock", "shape_dock", "file_dock", "info_dock"]:
+        for dock in ["flag_dock", "label_dock", "shape_dockColor","shape_dockDepth", "file_dock", "info_dock"]:
             if self._config[dock]["closable"]:
                 features = features | QtWidgets.QDockWidget.DockWidgetClosable
             if self._config[dock]["floatable"]:
@@ -297,7 +328,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea, self.info_dock)
         self.addDockWidget(Qt.RightDockWidgetArea, self.flag_dock)
         self.addDockWidget(Qt.RightDockWidgetArea, self.label_dock)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.shape_dock)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.shape_dockColor)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.shape_dockDepth)
         self.addDockWidget(Qt.RightDockWidgetArea, self.file_dock)
 
 
@@ -317,27 +349,20 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         #TODO 加入按钮还要加入功能，同时确定按钮好不好用,看看open对应的函数是怎么写的
         #openRGB只显示在左边，depth显示在右边，both都显示
-        openRGB_ = action(
-            self.tr("&Open RGB"),
+        open = action(
+            self.tr("&Open"),
             self.openFile,
-            shortcuts["open_RGB"],
+            shortcuts["open"],
             "open",
-            self.tr("Open RGB image"),
+            self.tr("Open image"),
         )
-        openDepth_ = action(
-            self.tr("&Open Depth"),
-            self.openDirDialog,
-            shortcuts["open_Depth"],
-            "open",
-            self.tr("Open depth image"),
-        )
-        openBoth_ = action(
-            self.tr("&Open Both"),
-            self.openDirDialog,
-            shortcuts["open_Both"],
-            "open",
-            self.tr("&Open both RGB&depth"),
-        )
+        # openBoth_ = action(
+        #     self.tr("&Open Both"),
+        #     self.openBoth,
+        #     shortcuts["open_Both"],
+        #     "open",
+        #     self.tr("&Open both RGB&depth"),
+        # )
         opendir = action(
             self.tr("&Open Dir"),
             self.openDirDialog,
@@ -433,7 +458,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         createMode = action(
             self.tr("Create Polygons"),
-            lambda: self.toggleDrawMode(False, createMode="polygon"),
+            lambda: self.toggleDrawMode(False, createMode="point"),
             shortcuts["create_polygon"],
             "objects",
             self.tr("Start drawing polygons"),
@@ -504,6 +529,14 @@ class MainWindow(QtWidgets.QMainWindow):
             self.tr("Create a duplicate of the selected polygons"),
             enabled=False,
         )
+        sync = action(
+            self.tr("sync Polygons"),
+            self.transferSelectedShape,
+            shortcuts["Sync_polygon"],
+            "copy",
+            self.tr("Create a copy of the selected polygons to another canvas"),
+            enabled=False,
+        )
         copy = action(
             self.tr("Copy Polygons"),
             self.copySelectedShape,
@@ -522,7 +555,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         undoLastPoint = action(
             self.tr("Undo last point"),
-            self.canvas.undoLastPoint,
+            self.canvasLeft.undoLastPoint,
             shortcuts["undo_last_point"],
             "undo",
             self.tr("Undo last drawn point"),
@@ -574,7 +607,7 @@ class MainWindow(QtWidgets.QMainWindow):
             str(
                 self.tr(
                     "Zoom in or out of the image. Also accessible with "
-                    "{} and {} from the canvas."
+                    "{} and {} from the canvasLeft."
                 )
             ).format(
                 utils.fmtShortcut(
@@ -660,7 +693,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.FIT_WINDOW: self.scaleFitWindow,
             self.FIT_WIDTH: self.scaleFitWidth,
             # Set to one to scale to 100% when loading files.
-            self.MANUAL_ZOOM: lambda: 1,
+            self.MANUAL_ZOOM: lambda: 0.71,
         }
 
         edit = action(
@@ -674,7 +707,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         fill_drawing = action(
             self.tr("Fill Drawing Polygon"),
-            self.canvas.setFillDrawing,
+            self.canvasLeft.setFillDrawing,
             None,
             "color",
             self.tr("Fill polygon while drawing"),
@@ -687,9 +720,14 @@ class MainWindow(QtWidgets.QMainWindow):
         #形成了QMenu对象，把label相关做成menu
         labelMenu = QtWidgets.QMenu()
         utils.addActions(labelMenu, (edit, delete))
-        self.labelList.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.labelList.customContextMenuRequested.connect(
-            self.popLabelListMenu
+        self.labelListColor.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.labelListColor.customContextMenuRequested.connect(
+            self.popLabelListColorMenu
+        )
+
+        self.labelListDepth.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.labelListDepth.customContextMenuRequested.connect(
+            self.popLabelListDepthMenu
         )
 
         # Store actions for further handling.
@@ -699,15 +737,15 @@ class MainWindow(QtWidgets.QMainWindow):
             changeOutputDir=changeOutputDir,
             save=save,
             saveAs=saveAs,
-            openRGB=openRGB_,
-            openDepth=openDepth_,
-            openBoth=openBoth_,
+            open=open,
+            # openBoth=openBoth_,
             close=close,
             deleteFile=deleteFile,
             toggleKeepPrevMode=toggle_keep_prev_mode,
             delete=delete,
             edit=edit,
             duplicate=duplicate,
+            sync=sync,
             copy=copy,
             paste=paste,
             undoLastPoint=undoLastPoint,
@@ -731,12 +769,14 @@ class MainWindow(QtWidgets.QMainWindow):
             zoomActions=zoomActions,
             openNextImg=openNextImg,
             openPrevImg=openPrevImg,
-            fileMenuActions=(openRGB_,openDepth_,openBoth_, opendir, save, saveAs, close, quit),
+            # fileMenuActions=(open,openBoth_, opendir, save, saveAs, close, quit),
+            fileMenuActions=(open, opendir, save, saveAs, close, quit),
             tool=(),
             # XXX: need to add some actions here to activate the shortcut
             editMenu=(
                 edit,
                 duplicate,
+                sync,
                 delete,
                 None,
                 undo,
@@ -757,6 +797,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 editMode,
                 edit,
                 duplicate,
+                sync,
                 copy,
                 paste,
                 delete,
@@ -778,7 +819,7 @@ class MainWindow(QtWidgets.QMainWindow):
             onShapesPresent=(saveAs, hideAll, showAll),
         )
 
-        self.canvas.vertexSelected.connect(self.actions.removePoint.setEnabled)
+        self.canvasLeft.vertexSelected.connect(self.actions.removePoint.setEnabled)
 
         self.menus = utils.struct(
             file=self.menu(self.tr("&File")),
@@ -792,9 +833,8 @@ class MainWindow(QtWidgets.QMainWindow):
         utils.addActions(
             self.menus.file,
             (
-                openRGB_,
-                openDepth_,
-                openBoth_,
+                open,
+                # openBoth_,
                 openNextImg,
                 openPrevImg,
                 opendir,
@@ -816,7 +856,8 @@ class MainWindow(QtWidgets.QMainWindow):
             (
                 self.flag_dock.toggleViewAction(),
                 self.label_dock.toggleViewAction(),
-                self.shape_dock.toggleViewAction(),
+                self.shape_dockColor.toggleViewAction(),
+                self.shape_dockDepth.toggleViewAction(),
                 self.file_dock.toggleViewAction(),
                 None,
                 fill_drawing,
@@ -838,10 +879,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.menus.file.aboutToShow.connect(self.updateFileMenu)
 
-        # Custom context menu for the canvas widget:
-        utils.addActions(self.canvas.menus[0], self.actions.menu)
+        # Custom context menu for the canvasLeft widget:
+        utils.addActions(self.canvasLeft.menus[0], self.actions.menu)
         utils.addActions(
-            self.canvas.menus[1],
+            self.canvasLeft.menus[1],
             (
                 action("&Copy here", self.copyShape),
                 action("&Move here", self.moveShape),
@@ -853,9 +894,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tools = self.toolbar("Tools")
         # Menu buttons on Left
         self.actions.tool = (
-            openRGB_,
-            openDepth_,
-            openBoth_,
+            open,
+            # openBoth_,
             opendir,
             openNextImg,
             openPrevImg,
@@ -864,9 +904,10 @@ class MainWindow(QtWidgets.QMainWindow):
             None,
             createMode,
             editMode,
-            duplicate,
-            copy,
-            paste,
+            # duplicate,
+            sync,
+            # copy,
+            # paste,
             delete,
             undo,
             brightnessContrast,
@@ -890,6 +931,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Application state.
         #一些app的初始状态
         self.image = QtGui.QImage()
+        self.imageDepth = QtGui.QImage()
         self.imagePath = None
         self.recentFiles = []
         self.maxRecent = 7
@@ -960,15 +1002,23 @@ class MainWindow(QtWidgets.QMainWindow):
     # Support Functions
 
     def noShapes(self):
-        return not len(self.labelList)
+        return not len(self.labelListColor) and len(self.labelListDepth)
+
+#TODO 修改窗口focus，和undo有关
+    def focusChangedColor(self):
+        self.nowFocus='RGB'
+
+
+    def focusChangedDepth(self):
+        self.nowFocus='Depth'
 
     #填充模式操作，populate，填充
     def populateModeActions(self):
         tool, menu = self.actions.tool, self.actions.menu
         self.tools.clear()
         utils.addActions(self.tools, tool)
-        self.canvas.menus[0].clear()
-        utils.addActions(self.canvas.menus[0], menu)
+        self.canvasLeft.menus[0].clear()
+        utils.addActions(self.canvasLeft.menus[0], menu)
         self.menus.edit.clear()
         actions = (
             self.actions.createMode,
@@ -986,14 +1036,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def setDirty(self):
         # Even if we autosave the file, we keep the ability to undo
-        self.actions.undo.setEnabled(self.canvas.isShapeRestorable)
-
+        self.actions.undo.setEnabled(self.canvasLeft.isShapeRestorable or self.canvasRight.isShapeRestorable)
         if self._config["auto_save"] or self.actions.saveAuto.isChecked():
             label_file = osp.splitext(self.imagePath)[0] + ".json"
             if self.output_dir:
                 label_file_without_path = osp.basename(label_file)
                 label_file = osp.join(self.output_dir, label_file_without_path)
-            self.saveLabels(label_file)
+            self.saveLabels(label_file,self.saveMode)
             return
         self.dirty = True
         self.actions.save.setEnabled(True)
@@ -1038,17 +1087,25 @@ class MainWindow(QtWidgets.QMainWindow):
 
     #resetState应该是重置一下变量，回归初始值
     def resetState(self):
-        self.labelList.clear()
+        self.labelListColor.clear()
+        self.labelListDepth.clear()
         self.filename = None
         self.imagePath = None
         self.imageData = None
         self.labelFile = None
         self.otherData = None
-        self.canvas.resetState()
+        self.canvasLeft.resetState()
+        self.canvasRight.resetState()
 
     #labellist是Qt组件，
-    def currentItem(self):
-        items = self.labelList.selectedItems()
+    def currentItemColor(self):
+        items = self.labelListColor.selectedItems()
+        if items:
+            return items[0]
+        return None
+
+    def currentItemDepth(self):
+        items = self.labelListDepth.selectedItems()
         if items:
             return items[0]
         return None
@@ -1063,10 +1120,41 @@ class MainWindow(QtWidgets.QMainWindow):
     # Callbacks
     #unDo,函数如其名
     def undoShapeEdit(self):
-        self.canvas.restoreShape()
-        self.labelList.clear()
-        self.loadShapes(self.canvas.shapes)
-        self.actions.undo.setEnabled(self.canvas.isShapeRestorable)
+
+        if self.nowFocus=='RGB':
+            if self.canvasLeft.isShapeRestorable:
+                self.canvasLeft.restoreShape()
+                self.labelListColor.clear()
+                self.labelListDepth.clear()
+                self.loadShapes(self.canvasLeft.shapes, self.canvasRight.shapes)
+                self.canvasRight.shapesBackups.pop()
+
+            elif self.canvasRight.isShapeRestorable:
+                self.canvasRight.restoreShape()
+                self.labelListColor.clear()
+                self.labelListDepth.clear()
+                self.loadShapes(self.canvasLeft.shapes, self.canvasRight.shapes)
+                self.canvasLeft.shapesBackups.pop()
+        else:
+            if self.canvasRight.isShapeRestorable:
+                self.canvasRight.restoreShape()
+                self.labelListColor.clear()
+                self.labelListDepth.clear()
+                self.loadShapes(self.canvasLeft.shapes, self.canvasRight.shapes)
+                self.canvasLeft.shapesBackups.pop()
+
+            elif self.canvasLeft.isShapeRestorable:
+                self.canvasLeft.restoreShape()
+                self.labelListColor.clear()
+                self.labelListDepth.clear()
+                self.loadShapes(self.canvasLeft.shapes, self.canvasRight.shapes)
+                self.canvasRight.shapesBackups.pop()
+
+
+        #FIXME 做出真正意义上的loadshapes
+
+        self.actions.undo.setEnabled(self.canvasLeft.isShapeRestorable or self.canvasRight.isShapeRestorable)
+
 
     def tutorial(self):
         url = "https://github.com/wkentaro/labelme/tree/main/examples/tutorial"  # NOQA
@@ -1083,9 +1171,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.actions.delete.setEnabled(not drawing)
 
     #这部分对应的是，右键选择创建多边形模式之后，就把现有的模式在右键菜单改变为不可选
-    def toggleDrawMode(self, edit=True, createMode="polygon"):
-        self.canvas.setEditing(edit)
-        self.canvas.createMode = createMode
+    def toggleDrawMode(self, edit=True, createMode="point"):
+        self.canvasLeft.setEditing(edit)
+        self.canvasLeft.createMode = createMode
+        self.canvasRight.setEditing(edit)
+        self.canvasRight.createMode = createMode
         if edit:
             self.actions.createMode.setEnabled(True)
             self.actions.createRectangleMode.setEnabled(True)
@@ -1163,8 +1253,25 @@ class MainWindow(QtWidgets.QMainWindow):
             menu.addAction(action)
 
     #
-    def popLabelListMenu(self, point):
-        self.menus.labelList.exec_(self.labelList.mapToGlobal(point))
+    def popLabelListColorMenu(self, point):
+        self.menus.labelList.exec_(self.labelListColor.mapToGlobal(point))
+
+    def popLabelListDepthMenu(self, point):
+        self.menus.labelList.exec_(self.labelListDepth.mapToGlobal(point))
+
+    def duplicateLabel(self, label,mode):
+        if mode=='R':
+            for i in range(len(self.labelListColor)):
+                label_i = self.labelListColor[i].data(Qt.UserRole).label
+                if label_i == label:
+                    return True
+            return False
+        if mode=='D':
+            for i in range(len(self.labelListDepth)):
+                label_i = self.labelListDepth[i].data(Qt.UserRole).label
+                if label_i == label:
+                    return True
+            return False
 
     def validateLabel(self, label):
         # no validation
@@ -1183,7 +1290,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if item and not isinstance(item, LabelListWidgetItem):
             raise TypeError("item must be LabelListWidgetItem type")
 
-        if not self.canvas.editing():
+        if not self.canvasLeft.editing() or self.canvasRight.editing():
             return
         if not item:
             item = self.currentItem()
@@ -1227,6 +1334,18 @@ class MainWindow(QtWidgets.QMainWindow):
             item.setData(Qt.UserRole, shape.label)
             self.uniqLabelList.addItem(item)
 
+    #TODO copyallshapes的函数
+    def copyAllShapes(self,pressed):
+
+        self.labelFile.shapesDepth=self.labelFile.shapesRGB.copy()
+        self.canvasRight.shapes=self.canvasLeft.shapes.copy()
+        #FIXME 此时虽然reload，但不能更新label，或者更新也得初始化label再读取，不然就会重复
+        #FIXME 此时虽然reload，但不能更新label，或者更新也得初始化label再读取，不然就会重复
+        self.labelListColor.clear()
+        self.labelListDepth.clear()
+        self.loadShapes(self.canvasLeft.shapes,self.canvasRight.shapes)
+            # self.canvasRight.update()
+            # self.canvasRight.repaint()
     #搜索文件相关，在文件listdock里
     def fileSearchChanged(self):
         self.importDirImages(
@@ -1244,41 +1363,74 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if not self.mayContinue():
             return
-
-        currIndex = self.imageList.index(str(item.text()))
+        currIndex = self.imageList.index(str(item.text()))   # self.lastOpenDir
         if currIndex < len(self.imageList):
             filename = self.imageList[currIndex]
-            if filename:
-                self.loadFile(filename)
 
-    # React to canvas signals.
+            if filename:
+                fileNameDepth = filename[:filename.index('color')] + 'depth.png'
+                fileNameFull = osp.join(self.lastOpenDir, filename)
+                fileDepthFull = osp.join(self.lastOpenDir, fileNameDepth)
+                if not osp.exists(fileNameFull):
+                    fileNameFull = None
+                if not osp.exists(fileDepthFull):
+                    fileDepthFull = None
+                self.loadFileSelect(fileNameFull, fileDepthFull)
+
+    # React to canvasLeft signals.
     #一旦选择到shape就会调用此函数，用于更改shape是否被选中的状态
-    def shapeSelectionChanged(self, selected_shapes):
+    #FIXME Canvas判斷1
+    def shapeSelectionChangedColor(self, selected_shapes):
+        self.nowFocus='RGB'
         self._noSelectionSlot = True
-        for shape in self.canvas.selectedShapes:
+        self.canvasRight.deSelectShape()
+        for shape in self.canvasLeft.selectedShapes:
             shape.selected = False
-        self.labelList.clearSelection()
-        self.canvas.selectedShapes = selected_shapes
-        for shape in self.canvas.selectedShapes:
+        self.labelListColor.clearSelection()
+        self.canvasLeft.selectedShapes = selected_shapes
+        for shape in self.canvasLeft.selectedShapes:
             shape.selected = True
-            item = self.labelList.findItemByShape(shape)
-            self.labelList.selectItem(item)
-            self.labelList.scrollToItem(item)
+            item = self.labelListColor.findItemByShape(shape)
+            self.labelListColor.selectItem(item)
+            self.labelListColor.scrollToItem(item)
         self._noSelectionSlot = False
         n_selected = len(selected_shapes)
         self.actions.delete.setEnabled(n_selected)
         self.actions.duplicate.setEnabled(n_selected)
+        self.actions.sync.setEnabled(n_selected)
+        self.actions.copy.setEnabled(n_selected)
+        self.actions.edit.setEnabled(n_selected == 1)
+
+    def shapeSelectionChangedDepth(self, selected_shapes):
+        self.nowFocus = 'Depth'
+        self._noSelectionSlot = True
+        self.canvasLeft.deSelectShape()
+        for shape in self.canvasRight.selectedShapes:
+            shape.selected = False
+        self.labelListDepth.clearSelection()
+        self.canvasRight.selectedShapes = selected_shapes
+        for shape in self.canvasRight.selectedShapes:
+            shape.selected = True
+            item = self.labelListDepth.findItemByShape(shape)
+            self.labelListDepth.selectItem(item)
+            self.labelListDepth.scrollToItem(item)
+        self._noSelectionSlot = False
+        n_selected = len(selected_shapes)
+        self.actions.delete.setEnabled(n_selected)
+        self.actions.duplicate.setEnabled(n_selected)
+        self.actions.sync.setEnabled(n_selected)
         self.actions.copy.setEnabled(n_selected)
         self.actions.edit.setEnabled(n_selected == 1)
 
     # 增加label的函数，输入值是一个shape，是新画好的shape
-    def addLabel(self, shape):
+    # FIXME Canvas判斷1
+    def addLabelColor(self, shape):
         if shape.group_id is None:
             text = shape.label
         else:
             text = "{} ({})".format(shape.label, shape.group_id)
         label_list_item = LabelListWidgetItem(text, shape)
-        self.labelList.addItem(label_list_item)
+        self.labelListColor.addItem(label_list_item)
         if not self.uniqLabelList.findItemsByLabel(shape.label):
             item = self.uniqLabelList.createItemFromLabel(shape.label)
             self.uniqLabelList.addItem(item)
@@ -1287,7 +1439,28 @@ class MainWindow(QtWidgets.QMainWindow):
         self.labelDialog.addLabelHistory(shape.label)
         for action in self.actions.onShapesPresent:
             action.setEnabled(True)
-
+        self._update_shape_color(shape)
+        label_list_item.setText(
+            '{} <font color="#{:02x}{:02x}{:02x}">●</font>'.format(
+                html.escape(text), *shape.fill_color.getRgb()[:3]
+            )
+        )
+    def addLabelDepth(self, shape):
+        if shape.group_id is None:
+            text = shape.label
+        else:
+            text = "{} ({})".format(shape.label, shape.group_id)
+        label_list_item = LabelListWidgetItem(text, shape)
+        self.labelListDepth.addItem(label_list_item)
+        if not self.uniqLabelList.findItemsByLabel(shape.label):
+            item = self.uniqLabelList.createItemFromLabel(shape.label)
+            self.uniqLabelList.addItem(item)
+            rgb = self._get_rgb_by_label(shape.label)
+            self.uniqLabelList.setItemLabel(item, shape.label, rgb)
+        self.labelDialog.addLabelHistory(shape.label)
+        for action in self.actions.onShapesPresent:
+            action.setEnabled(True)
+        #给canvas上的点赋予颜色
         self._update_shape_color(shape)
         label_list_item.setText(
             '{} <font color="#{:02x}{:02x}{:02x}">●</font>'.format(
@@ -1323,56 +1496,286 @@ class MainWindow(QtWidgets.QMainWindow):
         return (0, 255, 0)
 
     #删除label，在删除shape时候调用
+    # FIXME Canvas判斷3
     def remLabels(self, shapes):
-        for shape in shapes:
-            item = self.labelList.findItemByShape(shape)
-            self.labelList.removeItem(item)
+        if self.nowFocus=='RGB':
+            for shape in shapes:
+                item = self.labelListColor.findItemByShape(shape)
+                self.labelListColor.removeItem(item)
+        else:
+            for shape in shapes:
+                item = self.labelListDepth.findItemByShape(shape)
+                self.labelListDepth.removeItem(item)
 
     #读取shape
-    def loadShapes(self, shapes, replace=True):
+    # TODO 两边显示点管线：读取形状，如果此函数加入了canvasright，就是同时显示两边，那符合需求吗，试一试
+    # FIXME Canvas判斷4
+    def loadShapeSync(self, shapestoR, shapestoD, replace=True):
         self._noSelectionSlot = True
-        for shape in shapes:
-            self.addLabel(shape)
-        self.labelList.clearSelection()
+        labelShapeColor = []
+        labelShapeDepth = []
+        dupR = []
+        dupD = []
+        dupROri = []
+        dupDOri = []
+        for it in self.labelListColor:
+            labelShapeColor.append(it.shape())
+        for it in self.labelListDepth:
+            labelShapeDepth.append(it.shape())
+        for it in shapestoR:
+            for it2 in labelShapeColor:
+                if it.label == it2.label:
+                    dupD.append(it)
+                    dupDOri.append(it2)
+
+        for it in shapestoD:
+            for it2 in labelShapeDepth:
+                if it.label == it2.label:
+                    dupR.append(it)
+                    dupROri.append(it2)
+
+        if len(dupD)!=0:
+            reply = QtWidgets.QMessageBox.question(self, 'Message', 'Points {} have been exist in RGB canvas. Do you want to overwrite them?'.format([it.label for it in dupD]),
+                                                   QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                                                   QtWidgets.QMessageBox.No)
+
+            if reply == QtWidgets.QMessageBox.No:
+                for it in dupD:
+                    for it2 in shapestoR:
+                        if it2.label == it.label:
+                            shapestoR.remove(it2)
+                # label shape里去除现在说重复的shape，然后加上整个shapeto，
+                labelShapeColor = labelShapeColor + shapestoR
+            else:
+                for it2 in dupDOri:
+                    for it in labelShapeColor:
+                        if it.label == it2.label:
+                            item = self.labelListColor.findItemByShape(it)
+                            self.labelListColor.removeItem(item)
+                            labelShapeColor.remove(it)
+                            if len(labelShapeColor) == 0:
+                                break
+                    if len(labelShapeColor)==0:
+                        break
+                labelShapeColor = labelShapeColor + shapestoR
+
+        elif len(dupR)!=0:
+            reply = QtWidgets.QMessageBox.question(self, 'Message', 'Points {} have been exist in Depth canvas. Do you want to overwrite them?'.format([it.label for it in dupR]),
+                                                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                                                QtWidgets.QMessageBox.No)
+
+            if reply == QtWidgets.QMessageBox.No:
+                for it in dupR:
+                    for it2 in shapestoD:
+                        if it2.label == it.label:
+                            shapestoD.remove(it2)
+
+                #label shape里去除现在说重复的shape，然后加上整个shapeto，
+                labelShapeDepth = labelShapeDepth + shapestoD
+            else:
+                for it2 in dupROri:
+                    for it in labelShapeDepth:
+                        if it.label==it2.label:
+                            item = self.labelListDepth.findItemByShape(it)
+                            self.labelListDepth.removeItem(item)
+                            labelShapeDepth.remove(it)
+                            if len(labelShapeColor) == 0:
+                                break
+                    if len(labelShapeDepth)==0:
+                        break
+                labelShapeDepth=labelShapeDepth+shapestoD
+        else:
+            labelShapeDepth = labelShapeDepth + shapestoD
+            labelShapeColor = labelShapeColor + shapestoR
+        if len(shapestoR) != 0:
+            for shape in shapestoR:
+                self.addLabelColor(shape)
+            self.labelListColor.clearSelection()
+            self.canvasLeft.loadShapes(labelShapeColor, replace=replace)
+            self.canvasLeft.selectShapes(labelShapeColor)
+            self.canvasLeft.deSelectShape()
+            for it in shapestoR:
+                itm=self.labelListColor.findItemByShape(it)
+                self.labelListColor.selectItem(itm)
+            self.nowFocus = 'RGB'
+
+
+
+        if len(shapestoD) != 0:
+            for shape in shapestoD:
+                self.addLabelDepth(shape)
+            self.labelListDepth.clearSelection()
+            self.canvasRight.loadShapes(labelShapeDepth, replace=replace)
+            self.canvasRight.selectShapes(labelShapeDepth)
+            self.canvasRight.deSelectShape()
+            for it in shapestoD:
+                itm=self.labelListDepth.findItemByShape(it)
+                self.labelListDepth.selectItem(itm)
+            self.nowFocus = 'Depth'
+
+
+
         self._noSelectionSlot = False
-        self.canvas.loadShapes(shapes, replace=replace)
 
+    def loadShapes(self, shapesR, shapesD, replace=True):
+        self._noSelectionSlot = True
+
+
+        if len(shapesR)!=0:
+            for shape in shapesR:
+
+                self.addLabelColor(shape)
+            self.labelListColor.clearSelection()
+            self.canvasLeft.loadShapes(shapesR, replace=replace)
+        if len(shapesD)!=0:
+            for shape in shapesD:
+                self.addLabelDepth(shape)
+            self.labelListDepth.clearSelection()
+            self.canvasRight.loadShapes(shapesD, replace=replace)
+
+        self._noSelectionSlot = False
     #读取labels
-    def loadLabels(self, shapes):
-        s = []
-        for shape in shapes:
-            label = shape["label"]
-            points = shape["points"]
-            shape_type = shape["shape_type"]
-            flags = shape["flags"]
-            group_id = shape["group_id"]
-            other_data = shape["other_data"]
 
-            if not points:
-                # skip point-empty shape
-                continue
 
-            shape = Shape(
-                label=label,
-                shape_type=shape_type,
-                group_id=group_id,
-            )
-            for x, y in points:
-                shape.addPoint(QtCore.QPointF(x, y))
-            shape.close()
+    #TODO 两边显示点管线：读取labels，是两边同样显示的关键
+    def loadLabels(self, shapesrgb,shapesdepth,side):
+        sRGB = []
+        sDepth=[]
+        if side=='R':
+            shapes=shapesrgb
+            for shape in shapes:
+                label = shape["label"]
+                points = shape["points"]
+                shape_type = shape["shape_type"]
+                flags = shape["flags"]
+                group_id = shape["group_id"]
+                other_data = shape["other_data"]
 
-            default_flags = {}
-            if self._config["label_flags"]:
-                for pattern, keys in self._config["label_flags"].items():
-                    if re.match(pattern, label):
-                        for key in keys:
-                            default_flags[key] = False
-            shape.flags = default_flags
-            shape.flags.update(flags)
-            shape.other_data = other_data
+                if not points:
+                    # skip point-empty shape
+                    continue
 
-            s.append(shape)
-        self.loadShapes(s)
+                shape = Shape(
+                    label=label,
+                    shape_type=shape_type,
+                    group_id=group_id,
+                )
+                for x, y in points:
+                    shape.addPoint(QtCore.QPointF(x, y))
+                shape.close()
+
+                default_flags = {}
+                if self._config["label_flags"]:
+                    for pattern, keys in self._config["label_flags"].items():
+                        if re.match(pattern, label):
+                            for key in keys:
+                                default_flags[key] = False
+                shape.flags = default_flags
+                shape.flags.update(flags)
+                shape.other_data = other_data
+
+                sRGB.append(shape)
+        elif side=='D':
+            shapes=shapesdepth
+            for shape in shapes:
+                label = shape["label"]
+                points = shape["points"]
+                shape_type = shape["shape_type"]
+                flags = shape["flags"]
+                group_id = shape["group_id"]
+                other_data = shape["other_data"]
+
+                if not points:
+                    # skip point-empty shape
+                    continue
+
+                shape = Shape(
+                    label=label,
+                    shape_type=shape_type,
+                    group_id=group_id,
+                )
+                for x, y in points:
+                    shape.addPoint(QtCore.QPointF(x, y))
+                shape.close()
+
+                default_flags = {}
+                if self._config["label_flags"]:
+                    for pattern, keys in self._config["label_flags"].items():
+                        if re.match(pattern, label):
+                            for key in keys:
+                                default_flags[key] = False
+                shape.flags = default_flags
+                shape.flags.update(flags)
+                shape.other_data = other_data
+
+                sDepth.append(shape)
+        else:
+            for shape in shapesrgb:
+                label = shape["label"]
+                points = shape["points"]
+                shape_type = shape["shape_type"]
+                flags = shape["flags"]
+                group_id = shape["group_id"]
+                other_data = shape["other_data"]
+
+                if not points:
+                    # skip point-empty shape
+                    continue
+
+                shape = Shape(
+                    label=label,
+                    shape_type=shape_type,
+                    group_id=group_id,
+                )
+                for x, y in points:
+                    shape.addPoint(QtCore.QPointF(x, y))
+                shape.close()
+
+                default_flags = {}
+                if self._config["label_flags"]:
+                    for pattern, keys in self._config["label_flags"].items():
+                        if re.match(pattern, label):
+                            for key in keys:
+                                default_flags[key] = False
+                shape.flags = default_flags
+                shape.flags.update(flags)
+                shape.other_data = other_data
+
+                sRGB.append(shape)
+
+            for shape in shapesdepth:
+                label = shape["label"]
+                points = shape["points"]
+                shape_type = shape["shape_type"]
+                flags = shape["flags"]
+                group_id = shape["group_id"]
+                other_data = shape["other_data"]
+
+                if not points:
+                    # skip point-empty shape
+                    continue
+
+                shape = Shape(
+                    label=label,
+                    shape_type=shape_type,
+                    group_id=group_id,
+                )
+                for x, y in points:
+                    shape.addPoint(QtCore.QPointF(x, y))
+                shape.close()
+
+                default_flags = {}
+                if self._config["label_flags"]:
+                    for pattern, keys in self._config["label_flags"].items():
+                        if re.match(pattern, label):
+                            for key in keys:
+                                default_flags[key] = False
+                shape.flags = default_flags
+                shape.flags.update(flags)
+                shape.other_data = other_data
+
+                sDepth.append(shape)
+        self.loadShapes(sRGB,sDepth)
 
     #读取flag
     def loadFlags(self, flags):
@@ -1384,7 +1787,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.flag_widget.addItem(item)
 
     #保存label
-    def saveLabels(self, filename):
+    def saveLabels(self, filename,savemode):
         lf = LabelFile()
 
         def format_shape(s):
@@ -1399,8 +1802,57 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
             )
             return data
+        #TODO 在此写入固定的dict内容，包括所有的部位label
+        #我想的是，shapes的结构先不变，按照梁佳敏的存，然后在shapes里找，看看label里哪些有变化，就替换，这样保证shapes结构不变
+        oridict={
+            "label":"",
+            "points":None,
+            "group_id":None,
+            "shape_type":"point",
+            "flags":{}
+        }
+        shape_dictR,shape_dictD=[],[]
 
-        shapes = [format_shape(item.shape()) for item in self.labelList]
+        # for it in self._config["labels"]:
+        #     dictit=oridict.copy()
+        #     dictit['label']=it
+        #     shape_dictR.append(dictit)
+        #     shape_dictD.append(dictit)
+
+        shapesColor = [format_shape(item.shape()) for item in self.labelListColor]
+        shapesDepth = [format_shape(item.shape()) for item in self.labelListDepth]
+        with open(filename, 'r', encoding='utf8') as fp:
+            json_data = json.load(fp)
+        shape_dictR=json_data['shapes_rgb']
+        shape_dictD = json_data['shapes_depth']
+        if len(shapesColor)>26 or len(shapesDepth)>26:
+            self.errorMessage(
+                self.tr("Error saving label data,Label more than 26."),self.tr("Repeat shape:{}")
+            )
+
+        #TODO ！！！！！保存函数！！！！！把标的shapes替换到对应dict位置
+        for its in shapesColor:
+            find=its['label']
+            for i in range(0,len(shape_dictR)):
+                if shape_dictR[i]['label']==find:
+                    shape_dictR[i]=its
+        for its in shapesDepth:
+            find=its['label']
+            for i in range(0,len(shape_dictD)):
+                if shape_dictD[i]['label']==find:
+                    shape_dictD[i]=its
+        if savemode=='R':
+            shape_dictR=shape_dictR
+            shape_dictD=shape_dictD
+        elif savemode=='D':
+            shape_dictR=shape_dictR
+            shape_dictD=shape_dictD
+        else:
+            shape_dictR = shape_dictR
+            shape_dictD = shape_dictD
+
+
+
         flags = {}
         for i in range(self.flag_widget.count()):
             item = self.flag_widget.item(i)
@@ -1414,14 +1866,16 @@ class MainWindow(QtWidgets.QMainWindow):
                 os.makedirs(osp.dirname(filename))
             lf.save(
                 filename=filename,
-                shapes=shapes,
+                shapes_rgb=shape_dictR,
+                shapes_depth=shape_dictD,
                 imagePath=imagePath,
+            imageHeight = self.image.height(),
+            imageWidth = self.image.width(),
                 imageData=imageData,
-                imageHeight=self.image.height(),
-                imageWidth=self.image.width(),
                 otherData=self.otherData,
                 flags=flags,
             )
+
             self.labelFile = lf
             items = self.fileListWidget.findItems(
                 self.imagePath, Qt.MatchExactly
@@ -1440,52 +1894,152 @@ class MainWindow(QtWidgets.QMainWindow):
             return False
     #堆叠选择shape，暂时未知用途 duplicate 复制
     def duplicateSelectedShape(self):
-        added_shapes = self.canvas.duplicateSelectedShapes()
-        self.labelList.clearSelection()
-        for shape in added_shapes:
-            self.addLabel(shape)
+        added_shapesL = self.canvasLeft.duplicateSelectedShapes()
+        added_shapesR = self.canvasRight.duplicateSelectedShapes()
+        self.labelListColor.clearSelection()
+        self.labelListDepth.clearSelection()
+        for shape in added_shapesL:
+            self.addLabelColor(shape)
+        for shape in added_shapesR:
+            self.addLabelDepth(shape)
         self.setDirty()
 
-    #copy，但dirty啥意思？
+
+    #TODO Sink points
+    # self.labelFile.shapesDepth = self.labelFile.shapesRGB.copy()
+    # self.canvasRight.shapes = self.canvasLeft.shapes.copy()
+    # # FIXME 此时虽然reload，但不能更新label，或者更新也得初始化label再读取，不然就会重复
+    # # FIXME 此时虽然reload，但不能更新label，或者更新也得初始化label再读取，不然就会重复
+    # self.labelListColor.clear()
+    # self.labelListDepth.clear()
+    # self.loadShapes(self.canvasLeft.shapes, self.canvasRight.shapes)
+
     def pasteSelectedShape(self):
-        self.loadShapes(self._copied_shapes, replace=False)
+        self.loadShapes(self._copied_shapes,self._copied_shapes, replace=False)
         self.setDirty()
 
     #paste
     def copySelectedShape(self):
-        self._copied_shapes = [s.copy() for s in self.canvas.selectedShapes]
+        self._copied_shapes = [s.copy() for s in self.canvasLeft.selectedShapes]
+        self.actions.paste.setEnabled(len(self._copied_shapes) > 0)
+
+    def transferSelectedShape(self):
+        added_shapesL = [s.copy() for s in self.canvasLeft.selectedShapes]
+        added_shapesR = [s.copy() for s in self.canvasRight.selectedShapes]
+        self.loadShapeSync(added_shapesR,added_shapesL, replace=True)
+        self.setDirty()
+
+        self.toggleDrawMode(True)
+        # for shape in added_shapesL:
+        #     self.addLabelDepth(shape)
+        # for shape in added_shapesR:
+        #     self.addLabelColor(shape)
+        # self.setDirty()
+
+    #copy，但dirty啥意思？
+    def pasteSelectedShape(self):
+        self.loadShapes(self._copied_shapes,self._copied_shapes, replace=False)
+        self.setDirty()
+
+    #paste
+    def copySelectedShape(self):
+        self._copied_shapes = [s.copy() for s in self.canvasLeft.selectedShapes]
         self.actions.paste.setEnabled(len(self._copied_shapes) > 0)
 
     #从labellist里选择label，选择之后会同时选中canvas上的shape
     def labelSelectionChanged(self):
         if self._noSelectionSlot:
             return
-        if self.canvas.editing():
-            selected_shapes = []
-            for item in self.labelList.selectedItems():
-                selected_shapes.append(item.shape())
-            if selected_shapes:
-                self.canvas.selectShapes(selected_shapes)
+        if self.canvasLeft.editing():
+            self.labelListDepth.clearSelection()
+            selected_shapesColor = []
+            for item in self.labelListColor.selectedItems():
+                selected_shapesColor.append(item.shape())
+            if selected_shapesColor:
+                self.canvasLeft.selectShapes(selected_shapesColor)
             else:
-                self.canvas.deSelectShape()
+                self.canvasLeft.deSelectShape()
+        else:
+            self.labelListColor.clearSelection()
+            selected_shapesDepth = []
+            for item in self.labelListDepth.selectedItems():
+                selected_shapesDepth.append(item.shape())
+            if selected_shapesDepth:
+                self.canvasRight.selectShapes(selected_shapesDepth)
+            else:
+                self.canvasRight.deSelectShape()
+
+    def labelSelectionChangedRGB(self):
+        if self._noSelectionSlot:
+            return
+        self.canvasRight.setEditing(False)
+        if self.canvasLeft.editing():
+            self.labelListDepth.clearSelection()
+            selected_shapesColor = []
+            for item in self.labelListColor.selectedItems():
+                selected_shapesColor.append(item.shape())
+            if selected_shapesColor:
+                self.canvasLeft.selectShapes(selected_shapesColor)
+                self.canvasRight.deSelectShape()
+            else:
+                self.canvasLeft.deSelectShape()
+        self.canvasRight.setEditing(True)
+
+    def labelSelectionChangedDepth(self):
+        if self._noSelectionSlot:
+            return
+        self.canvasLeft.setEditing(False)
+        if self.canvasRight.editing():
+            self.labelListColor.clearSelection()
+            selected_shapesDepth = []
+            for item in self.labelListDepth.selectedItems():
+                selected_shapesDepth.append(item.shape())
+            if selected_shapesDepth:
+                self.canvasRight.selectShapes(selected_shapesDepth)
+                self.canvasLeft.deSelectShape()
+            else:
+                self.canvasRight.deSelectShape()
+        self.canvasLeft.setEditing(True)
 
     #itemchange，都是和label dock操作相关的内容
-    def labelItemChanged(self, item):
+    def labelItemChangedRGB(self, item):
         shape = item.shape()
-        self.canvas.setShapeVisible(shape, item.checkState() == Qt.Checked)
-    #labelOrderChanged
-    def labelOrderChanged(self):
-        self.setDirty()
-        self.canvas.loadShapes([item.shape() for item in self.labelList])
+        self.canvasLeft.setShapeVisible(shape, item.checkState() == Qt.Checked)
+        numberColor = len(self.labelListColor)
+        self.shape_dockColor.setWindowTitle("RGB Polygon Labels ({})".format(numberColor))   
 
+    #labelOrderChanged
+    def labelOrderChangedRGB(self):
+        self.setDirty()
+        #TODO LabelList要分开
+        self.canvasLeft.loadShapes([item.shape() for item in self.labelListColor])
+
+
+    def labelItemChangedDepth(self, item):
+        shape = item.shape()
+        self.canvasRight.setShapeVisible(shape, item.checkState() == Qt.Checked)
+
+        numberDepth = len(self.labelListDepth)
+        self.shape_dockDepth.setWindowTitle("Depth Polygon Labels ({})".format(numberDepth)) 
+
+    #labelOrderChanged
+    def labelOrderChangedDepth(self):
+        self.setDirty()
+        #TODO LabelList要分开
+        self.canvasRight.loadShapes([item.shape() for item in self.labelListDepth])
     # Callback functions:回调函数
 
+    def itemChangedUniqLabelList(self):
+        number = len(self.uniqLabelList)
+        self.label_dock.setWindowTitle("Label Lists ({})".format(number))   
+
     #新建shape，新建任何shape的时候都会调用此函数
-    def newShape(self):
+    def newShapeDepth(self):
         """Pop-up and give focus to the label editor.
 
         position MUST be in global coordinates.
         """
+        self.nowFocus = 'Depth'
         items = self.uniqLabelList.selectedItems()
         text = None
         if items:
@@ -1506,18 +2060,93 @@ class MainWindow(QtWidgets.QMainWindow):
                 ),
             )
             text = ""
+        if text and self.duplicateLabel(text,'D'):
+            self.errorMessage(
+                self.tr("Repeated label"),
+                self.tr("Repeated label '{}', not allowed to create.").format(
+                    text
+                ),
+            )
+            for it in self.labelListDepth:
+                aa=it.shape()
+                if aa.label==text:
+                    dupshape=it.shape()
+                    break
+            text = ""
+            self.toggleDrawMode(True)
+            itemdup = self.labelListDepth.findItemByShape(dupshape)
+            self.labelListDepth.selectItem(itemdup)
         if text:
-            self.labelList.clearSelection()
-            shape = self.canvas.setLastLabel(text, flags)
+            self.labelListColor.clearSelection()
+            self.labelListDepth.clearSelection()
+            shape = self.canvasRight.setLastLabel(text, flags)
             shape.group_id = group_id
-            self.addLabel(shape)
+            self.addLabelDepth(shape)
             self.actions.editMode.setEnabled(True)
             self.actions.undoLastPoint.setEnabled(False)
             self.actions.undo.setEnabled(True)
             self.setDirty()
         else:
-            self.canvas.undoLastLine()
-            self.canvas.shapesBackups.pop()
+            self.canvasRight.undoLastLine()
+            self.canvasRight.shapesBackups.pop()
+
+    def newShapeRGB(self):
+        """Pop-up and give focus to the label editor.
+
+        position MUST be in global coordinates.
+        """
+        self.nowFocus = 'Depth'
+        items = self.uniqLabelList.selectedItems()
+        text = None
+        if items:
+            text = items[0].data(Qt.UserRole)
+        flags = {}
+        group_id = None
+        if self._config["display_label_popup"] or not text:
+            previous_text = self.labelDialog.edit.text() #弹出对话框，用来输入label信息
+            text, flags, group_id = self.labelDialog.popUp(text)
+            if not text:
+                self.labelDialog.edit.setText(previous_text)
+
+        if text and not self.validateLabel(text):
+            self.errorMessage(
+                self.tr("Invalid label"),
+                self.tr("Invalid label '{}' with validation type '{}'").format(
+                    text, self._config["validate_label"]
+                ),
+            )
+            text = ""
+
+        if text and self.duplicateLabel(text,'R'):
+            self.errorMessage(
+                self.tr("Repeated label"),
+                self.tr("Repeated label '{}', not allowed to create.").format(
+                    text
+                ),
+            )
+            for it in self.labelListColor:
+                aa=it.shape()
+                if aa.label==text:
+                    dupshape=it.shape()
+                    break
+            text = ""
+            self.toggleDrawMode(True)
+            itemdup = self.labelListColor.findItemByShape(dupshape)
+            self.labelListColor.selectItem(itemdup)
+
+        if text:
+            self.labelListColor.clearSelection()
+            self.labelListDepth.clearSelection()
+            shape = self.canvasLeft.setLastLabel(text, flags)
+            shape.group_id = group_id
+            self.addLabelColor(shape)
+            self.actions.editMode.setEnabled(True)
+            self.actions.undoLastPoint.setEnabled(False)
+            self.actions.undo.setEnabled(True)
+            self.setDirty()
+        else:
+            self.canvasLeft.undoLastLine()
+            self.canvasLeft.shapesBackups.pop()
 
     #和画布有关的缩放滚动
     def scrollRequest(self, delta, orientation):
@@ -1546,13 +2175,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setZoom(zoom_value)
 
     def zoomRequest(self, delta, pos):
-        canvas_width_old = self.canvas.width()
+        canvas_width_old = self.canvasLeft.width()
         units = 1.1
         if delta < 0:
             units = 0.9
         self.addZoom(units)
 
-        canvas_width_new = self.canvas.width()
+        canvas_width_new = self.canvasLeft.width()
         if canvas_width_old != canvas_width_new:
             canvas_scale_factor = canvas_width_new / canvas_width_old
 
@@ -1585,7 +2214,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.actions.keepPrevScale.setChecked(enabled)
 
     def onNewBrightnessContrast(self, qimage):
-        self.canvas.loadPixmap(
+        self.canvasLeft.loadPixmap(
             QtGui.QPixmap.fromImage(qimage), clear_shapes=False
         )
 
@@ -1609,92 +2238,257 @@ class MainWindow(QtWidgets.QMainWindow):
         self.brightnessContrast_values[self.filename] = (brightness, contrast)
 
     def togglePolygons(self, value):
-        for item in self.labelList:
+        for item in self.labelListColor:
+            item.setCheckState(Qt.Checked if value else Qt.Unchecked)
+        for item in self.labelListDepth:
             item.setCheckState(Qt.Checked if value else Qt.Unchecked)
 
 
+    def UpdatePInfo(self):
+        if self.labelFile==None:
+            return
+        newPose=self.patientINFO.Pose_combo.currentText()
+        newHeight=self.patientINFO.pInfoTextH.toPlainText()
+        newWeight=self.patientINFO.pInfoTextW.toPlainText()
+
+        self.otherData["patientHeight"]= newHeight
+        self.otherData["patientWeight"] = newWeight
+        self.otherData["patientPose"] = newPose
+        self.saveFile()
+
+    #创建默认json
+    def saveDefaultLabels(self,filename):
+
+        jsontext= {'version': '5.0.1', 'flags': {'__ignore__': True, 'occlusion': False, 'no_occlusion': False},
+                   'shapes_rgb': [
+                       {'label': 'HEADTOP', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'NECK', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'SHOULDER_LEFT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'SHOULDER_RIGHT', 'points': None, 'group_id': None, 'shape_type': 'point',
+                        'flags': {}},
+                       {'label': 'ELBOW_LEFT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'ELBOW_RIGHT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'WRIST_LEFT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'WRIST_RIGHT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'HIP_LEFT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'HIP_RIGHT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'GROIN', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'KNEE_LEFT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'KNEE_RIGHT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'ANKLE_LEFT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'ANKLE_RIGHT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'EYE_LEFT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'EYE_RIGHT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'EAR_LEFT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'EAR_RIGHT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'NOSE', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'BIGTOE_LEFT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'BIGTOE_RIGHT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'SMALLTOE_LEFT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'SMALLTOE_RIGHT', 'points': None, 'group_id': None, 'shape_type': 'point',
+                        'flags': {}},
+                       {'label': 'HEEL_LEFT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'HEEL_RIGH', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}}],
+                   'shapes_depth': [
+                       {'label': 'HEADTOP', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'NECK', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'SHOULDER_LEFT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'SHOULDER_RIGHT', 'points': None, 'group_id': None, 'shape_type': 'point',
+                        'flags': {}},
+                       {'label': 'ELBOW_LEFT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'ELBOW_RIGHT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'WRIST_LEFT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'WRIST_RIGHT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'HIP_LEFT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'HIP_RIGHT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'GROIN', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'KNEE_LEFT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'KNEE_RIGHT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'ANKLE_LEFT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'ANKLE_RIGHT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'EYE_LEFT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'EYE_RIGHT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'EAR_LEFT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'EAR_RIGHT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'NOSE', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'BIGTOE_LEFT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'BIGTOE_RIGHT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'SMALLTOE_LEFT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'SMALLTOE_RIGHT', 'points': None, 'group_id': None, 'shape_type': 'point',
+                        'flags': {}},
+                       {'label': 'HEEL_LEFT', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}},
+                       {'label': 'HEEL_RIGH', 'points': None, 'group_id': None, 'shape_type': 'point', 'flags': {}}],
+                   'imagePath': filename[filename.find('patient'):filename.find('_label')], 'patientHeight': 0, 'patientWeight': 0, 'patientPose': 'HFS',
+                   'calibrationExist': True, 'creator': 'default', 'reviewer': None}
+        with open(filename, 'w') as f:
+            json.dump(jsontext,f,indent=4,ensure_ascii=False)
 
     #读取文件，这个可能要改动
-    def loadFile(self, filename=None):
+
+
+    def calThresh(self, data):
+        flat_data = data.flatten()
+        flat_data = np.sort(flat_data)
+        flat_data = flat_data[:int(0.97 * flat_data.size)]  # use 97% data to eliminate outliers
+
+        mean = np.mean(flat_data)
+        sigma = np.std(flat_data)
+        # print(mean + 3*sigma)
+        thresh = np.uint16(mean + 3 * sigma)
+        return thresh
+
+    # TODO 读取文件
+    def loadFileSelect(self, filenameRGB=None, filenameDepth=None):
         """Load the specified file, or the last opened file if None."""
-        # changing fileListWidget loads file
-        if filename in self.imageList and (
-            self.fileListWidget.currentRow() != self.imageList.index(filename)
-        ):
-            self.fileListWidget.setCurrentRow(self.imageList.index(filename))
-            self.fileListWidget.repaint()
-            return
+
+        if len(self.imageList) > 1:  # open dir
+            # changing fileListWidget loads file
+            if filenameRGB is not None:
+                filenameBasename = filenameRGB.replace(self.lastOpenDir + '\\', '')
+
+                if filenameBasename in self.imageList and (
+                        self.fileListWidget.currentRow() != self.imageList.index(filenameBasename)
+                ):
+                    self.fileListWidget.setCurrentRow(self.imageList.index(filenameBasename))
+                    self.fileListWidget.repaint()
+                    return
+
+            if filenameDepth is not None:
+                filenameDepthBasename = filenameDepth.replace(self.lastOpenDir + '\\', '')
+
+                if filenameDepthBasename in self.imageList and (
+                        self.fileListWidget.currentRow() != self.imageList.index(filenameDepthBasename)
+                ):
+                    self.fileListWidget.setCurrentRow(self.imageList.index(filenameDepthBasename))
+                    self.fileListWidget.repaint()
+                    return
 
         self.resetState()
-        self.canvas.setEnabled(False)
-        if filename is None:
-            filename = self.settings.value("filename", "")
-        filename = str(filename)
-        if not QtCore.QFile.exists(filename):
-            self.errorMessage(
-                self.tr("Error opening file"),
-                self.tr("No such file: <b>%s</b>") % filename,
-            )
-            return False
+        self.canvasLeft.setEnabled(False)
+        self.canvasRight.setEnabled(False)
+
+        # if filenameRGB is None:
+        #     filenameRGB = self.settings.value("filename", "")
+        # filenameRGB = str(filenameRGB)
+
         # assumes same name, but json extension
-        self.status(
-            str(self.tr("Loading %s...")) % osp.basename(str(filename))
-        )
-        label_file = osp.splitext(filename)[0] + ".json"
+        if filenameRGB is not None:
+            self.status(
+                str(self.tr("Loading %s...")) % osp.basename(str(filenameRGB))
+            )
+
+        # if filenameDepth is None:
+        #     filenameDepth = self.settings.value("filename", "")
+
+        # assumes same name, but json extension
+        if filenameDepth is not None:
+            self.status(
+                str(self.tr("Loading %s...")) % osp.basename(str(filenameDepth))
+            )
+
+        # TODO
+        if filenameRGB is not None:
+            label_fileColor = osp.splitext(filenameRGB)[0]
+            label_fileColor = label_fileColor[:label_fileColor.index('color')] + 'label.json'
+        elif filenameDepth is not None:
+            label_fileColor = osp.splitext(filenameDepth)[0]
+            label_fileColor = label_fileColor[:label_fileColor.index('depth')] + 'label.json'
+        label_fileDepth = label_fileColor
         if self.output_dir:
-            label_file_without_path = osp.basename(label_file)
-            label_file = osp.join(self.output_dir, label_file_without_path)
-        if QtCore.QFile.exists(label_file) and LabelFile.is_label_file(
-            label_file
+            label_file_without_path_Color = osp.basename(label_fileColor)
+            label_fileColor = osp.join(self.output_dir, label_file_without_path_Color)
+            label_file_without_path_Depth = osp.basename(label_fileDepth)
+            label_fileDepth = osp.join(self.output_dir, label_file_without_path_Depth)
+        if QtCore.QFile.exists(label_fileColor) and LabelFile.is_label_file(
+                label_fileColor
         ):
             try:
-                self.labelFile = LabelFile(label_file)
+                self.labelFile = LabelFile(label_fileColor)
             except LabelFileError as e:
-                self.errorMessage(
-                    self.tr("Error opening file"),
-                    self.tr(
-                        "<p><b>%s</b></p>"
-                        "<p>Make sure <i>%s</i> is a valid label file."
-                    )
-                    % (e, label_file),
-                )
-                self.status(self.tr("Error reading %s") % label_file)
-                return False
+                # TODO 创建默认Json文件
+                self.saveDefaultLabels(label_fileColor)
+                self.labelFile = LabelFile(label_fileColor)
             self.imageData = self.labelFile.imageData
             self.imagePath = osp.join(
-                osp.dirname(label_file),
+                osp.dirname(label_fileColor),
                 self.labelFile.imagePath,
             )
             self.otherData = self.labelFile.otherData
-        else:
-            self.imageData = LabelFile.load_image_file(filename)
-            if self.imageData:
-                self.imagePath = filename
-            self.labelFile = None
-        image = QtGui.QImage.fromData(self.imageData)
 
-        if image.isNull():
-            formats = [
-                "*.{}".format(fmt.data().decode())
-                for fmt in QtGui.QImageReader.supportedImageFormats()
-            ]
-            self.errorMessage(
-                self.tr("Error opening file"),
-                self.tr(
-                    "<p>Make sure <i>{0}</i> is a valid image file.<br/>"
-                    "Supported image formats: {1}</p>"
-                ).format(filename, ",".join(formats)),
-            )
-            self.status(self.tr("Error reading %s") % filename)
-            return False
-        self.image = image
-        self.filename = filename
+        else:
+
+            try:
+                self.labelFile = LabelFile(label_fileColor)
+            except LabelFileError as e:
+
+                # TODO 创建默认Json文件
+                self.saveDefaultLabels(label_fileColor)
+                self.labelFile = LabelFile(label_fileColor)
+
+
+        # if os.path.exists(filenameRGB):
+        if filenameRGB is not None:
+
+            self.imageData = LabelFile.load_image_file(filenameRGB)
+            if self.imageData:
+                self.imagePath = filenameRGB
+            # self.labelFile = None
+            image = QtGui.QImage.fromData(self.imageData)
+
+        # if os.path.exists(filenameDepth):
+        if filenameDepth is not None:
+            self.imageDataDepthori = cv2.imread(filenameDepth, cv2.IMREAD_ANYDEPTH)
+            widthD = self.imageDataDepthori.shape[1]
+            heightD = self.imageDataDepthori.shape[0]
+            img_rgb_data = self.imageDataDepthori
+
+            thresh = self.calThresh(img_rgb_data)
+
+            img_rgb_data[img_rgb_data > thresh] = thresh
+            min_value = np.min(img_rgb_data)
+            max_value = np.max(img_rgb_data)
+
+            img_rgb_data = (img_rgb_data - min_value) * 255. / (max_value - min_value)
+            img_rgb_data = np.uint8(img_rgb_data)
+
+            img_rgb_data = cv2.applyColorMap(img_rgb_data, colormap=cv2.COLORMAP_BONE)
+            # cv2 中的色度图有十几种，其中最常用的是 cv2.COLORMAP_JET，蓝色表示较高的深度值，红色表示较低的深度值。
+            # cv.convertScaleAbs() 函数中的 alpha 的大小与深度图中的有效距离有关，如果像我一样默认深度图中的所有深度值都在有效距离内，并已经手动将16位深度转化为了8位深度，则 alpha 可以设为1。
+            img_rgb_data = cv2.applyColorMap(cv2.convertScaleAbs(img_rgb_data, alpha=1), cv2.COLORMAP_BONE)
+            # image = QtGui.QImage.fromData(self.imageData)
+            imageDepth = QtGui.QImage(img_rgb_data.data, widthD, heightD, widthD * 3, QtGui.QImage.Format_RGB888)
+
+        # self.image = image
+        # self.imageDepth = imageDepth
+        self.filename = filenameRGB
+        self.filenameDepth = filenameDepth
+
         if self._config["keep_prev"]:
-            prev_shapes = self.canvas.shapes
-        self.canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+            # FIXME 这个明显就上边的没用到
+            prev_shapes = self.canvasLeft.shapes
+
+        # current_labelsR=self.labelFile.shapesRGB
+        # current_labelsD=self.labelFile.shapesDepth
+        # self.canvasLeft._shapes=current_labelsR
+        # self.canvasRight._shapes=current_labelsD
+
+        if filenameRGB is not None:
+            self.canvasLeft.loadPixmap(QtGui.QPixmap.fromImage(image))
+            self.image = image
+            self.canvasLeft.setEnabled(True)
+            current_labelsR = self.labelFile.shapesRGB
+            self.canvasLeft._shapes = current_labelsR
+        if filenameDepth is not None:
+            self.canvasRight.loadPixmap(QtGui.QPixmap.fromImage(imageDepth))
+            self.imageDepth = imageDepth
+            self.canvasRight.setEnabled(True)
+            current_labelsD = self.labelFile.shapesDepth
+            self.canvasRight._shapes = current_labelsD
+
         flags = {k: False for k in self._config["flags"] or []}
         if self.labelFile:
-            self.loadLabels(self.labelFile.shapes)
+            # TODO 這裏是讀取label,然后把label中的shapes给赋值，显示到图片中
+            self.loadLabels(self.labelFile.shapesRGB, self.labelFile.shapesDepth, 0)
             if self.labelFile.flags is not None:
                 flags.update(self.labelFile.flags)
         self.loadFlags(flags)
@@ -1703,8 +2497,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.setDirty()
         else:
             self.setClean()
-        self.canvas.setEnabled(True)
+        # self.canvasLeft.setEnabled(True)
+        # self.canvasRight.setEnabled(True)
         # set zoom values
+        # TODO 這裏修改自適應的zoom
         is_initial_load = not self.zoom_values
         if self.filename in self.zoom_values:
             self.zoomMode = self.zoom_values[self.filename][0]
@@ -1712,45 +2508,76 @@ class MainWindow(QtWidgets.QMainWindow):
         elif is_initial_load or not self._config["keep_prev_scale"]:
             self.adjustScale(initial=True)
         # set scroll values
+
         for orientation in self.scroll_values:
             if self.filename in self.scroll_values[orientation]:
                 self.setScroll(
                     orientation, self.scroll_values[orientation][self.filename]
                 )
-        # set brightness contrast values
-        dialog = BrightnessContrastDialog(
-            utils.img_data_to_pil(self.imageData),
-            self.onNewBrightnessContrast,
-            parent=self,
-        )
-        brightness, contrast = self.brightnessContrast_values.get(
-            self.filename, (None, None)
-        )
-        if self._config["keep_prev_brightness"] and self.recentFiles:
-            brightness, _ = self.brightnessContrast_values.get(
-                self.recentFiles[0], (None, None)
+
+        if filenameRGB is not None:
+            # set brightness contrast values
+            dialog = BrightnessContrastDialog(
+                utils.img_data_to_pil(self.imageData),
+                self.onNewBrightnessContrast,
+                parent=self,
             )
-        if self._config["keep_prev_contrast"] and self.recentFiles:
-            _, contrast = self.brightnessContrast_values.get(
-                self.recentFiles[0], (None, None)
+            brightness, contrast = self.brightnessContrast_values.get(
+                self.filename, (None, None)
             )
-        if brightness is not None:
-            dialog.slider_brightness.setValue(brightness)
-        if contrast is not None:
-            dialog.slider_contrast.setValue(contrast)
-        self.brightnessContrast_values[self.filename] = (brightness, contrast)
-        if brightness is not None or contrast is not None:
-            dialog.onNewValue(None)
-        self.paintCanvas()
-        self.addRecentFile(self.filename)
-        self.toggleActions(True)
-        self.canvas.setFocus()
-        self.status(str(self.tr("Loaded %s")) % osp.basename(str(filename)))
+            if self._config["keep_prev_brightness"] and self.recentFiles:
+                brightness, _ = self.brightnessContrast_values.get(
+                    self.recentFiles[0], (None, None)
+                )
+            if self._config["keep_prev_contrast"] and self.recentFiles:
+                _, contrast = self.brightnessContrast_values.get(
+                    self.recentFiles[0], (None, None)
+                )
+            if brightness is not None:
+                dialog.slider_brightness.setValue(brightness)
+            if contrast is not None:
+                dialog.slider_contrast.setValue(contrast)
+            self.brightnessContrast_values[self.filename] = (brightness, contrast)
+            if brightness is not None or contrast is not None:
+                dialog.onNewValue(None)
+
+            # TODO 搞清這些函數是幹啥的
+            self.paintCanvas()
+            self.addRecentFile(self.filename)
+            self.toggleActions(True)
+            self.canvasLeft.setFocus()
+            self.canvasRight.setFocus()
+            self.status(str(self.tr("Loaded %s")) % osp.basename(str(filenameRGB)))
+
+        # 更新病人信息到label
+
+        self.patientINFO.LoadInfo(self.labelFile)
+
+        # check the calibration file 
+        basename = os.path.basename(self.labelFile.filename)
+        calibrationPath = os.path.join(self.labelFile.filename.replace(basename, ""), "calibration.yml")
+        flag = os.path.exists(calibrationPath)
+
+        if (flag ^ self.labelFile.otherData["calibrationExist"]):
+            # warning box
+            if flag:
+                firstMess = "is exist"
+                secondMess = "is not exist"
+            else:
+                firstMess = "is not exist"
+                secondMess = "is exist"
+            reply = QtWidgets.QMessageBox.warning(self, "Tips", "Do you want to change the calibration exist in json file? Currently the calibration file {}, while the calibrationExist flag in .json file {}.".format(firstMess, secondMess), \
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.Yes)
+            if reply == QtWidgets.QMessageBox.Yes:
+                self.labelFile.otherData["calibrationExist"] = flag
+                self.UpdatePInfo()   # auto save
+                
+        self.patientINFO.Update.clicked.connect(lambda: self.UpdatePInfo())
         return True
 
     def resizeEvent(self, event):
         if (
-            self.canvas
+            self.canvasLeft
             and not self.image.isNull()
             and self.zoomMode != self.MANUAL_ZOOM
         ):
@@ -1759,13 +2586,18 @@ class MainWindow(QtWidgets.QMainWindow):
 
     #把图片画到canvas中
     def paintCanvas(self):
-        assert not self.image.isNull(), "cannot paint null image"
-        self.canvas.scale = 0.01 * self.zoomWidget.value()
-        self.canvas.adjustSize()
-        self.canvas.update()
+        # assert not self.image.isNull(), "cannot paint null image"
+        if not self.image.isNull():
+            self.canvasLeft.scale = 0.01 * self.zoomWidget.value()
+            self.canvasLeft.adjustSize()
+            self.canvasLeft.update()
+        if not self.imageDepth.isNull():
+            self.canvasRight.scale = 0.01 * self.zoomWidget.value()
+            self.canvasRight.adjustSize()
+            self.canvasRight.update()
 
     def adjustScale(self, initial=False):
-        value = self.scalers[self.FIT_WINDOW if initial else self.zoomMode]()
+        value = self.scalers[self.MANUAL_ZOOM if initial else self.zoomMode]()
         value = int(100 * value)
         self.zoomWidget.setValue(value)
         self.zoom_values[self.filename] = (self.zoomMode, value)
@@ -1778,15 +2610,15 @@ class MainWindow(QtWidgets.QMainWindow):
         h1 = self.centralWidget().height() - e
         a1 = w1 / h1
         # Calculate a new scale value based on the pixmap's aspect ratio.
-        w2 = self.canvas.pixmap.width() - 0.0
-        h2 = self.canvas.pixmap.height() - 0.0
+        w2 = self.canvasLeft.pixmap.width() - 0.0
+        h2 = self.canvasLeft.pixmap.height() - 0.0
         a2 = w2 / h2
         return w1 / w2 if a2 >= a1 else h1 / h2
 
     def scaleFitWidth(self):
         # The epsilon does not seem to work too well here.
         w = self.centralWidget().width() - 2.0
-        return w / self.canvas.pixmap.width()
+        return w / self.canvasLeft.pixmap.width()
 
     def enableSaveImageWithData(self, enabled):
         self._config["store_data"] = enabled
@@ -1829,10 +2661,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def loadRecent(self, filename):
         if self.mayContinue():
-            self.loadFile(filename)
+            self.loadFileSelect(filename)
 
     #打开上张，和下边的打开下一张，这如果要是显示两个，那就都得修改
-    def openPrevImg(self, _value=False):
+    def openPrevImg(self, _value=False, load=True):
         keep_prev = self._config["keep_prev"]
         if QtWidgets.QApplication.keyboardModifiers() == (
             Qt.ControlModifier | Qt.ShiftModifier
@@ -1848,15 +2680,18 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.filename is None:
             return
 
-        currIndex = self.imageList.index(self.filename)
+        currIndex = self.imageList.index(osp.basename(self.filename))
         if currIndex - 1 >= 0:
             filename = self.imageList[currIndex - 1]
-            if filename:
-                self.loadFile(filename)
+            if filename and load:
+                # self.loadFileSelect(filename)
+                self.filename = filename
+                fileNameDepth = self.filename[:self.filename.index('color')] + 'depth.png'
+                self.loadFileSelect(os.path.join(self.lastOpenDir, self.filename),os.path.join(self.lastOpenDir, fileNameDepth))
 
         self._config["keep_prev"] = keep_prev
 
-
+    #TODO 此处修改了原本的openNextImg，使得可以同时打开深度图和RGB图
     def openNextImg(self, _value=False, load=True):
         keep_prev = self._config["keep_prev"]
         if QtWidgets.QApplication.keyboardModifiers() == (
@@ -1874,7 +2709,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.filename is None:
             filename = self.imageList[0]
         else:
-            currIndex = self.imageList.index(self.filename)
+            currIndex = self.imageList.index(osp.basename(self.filename))
             if currIndex + 1 < len(self.imageList):
                 filename = self.imageList[currIndex + 1]
             else:
@@ -1882,7 +2717,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.filename = filename
 
         if self.filename and load:
-            self.loadFile(self.filename)
+            fileNameDepth = self.filename[:self.filename.index('color')] + 'depth.png'
+            # self.loadFileBoth(self.filename,fileNameDepth)
+            self.loadFileSelect(os.path.join(self.lastOpenDir, self.filename),os.path.join(self.lastOpenDir, fileNameDepth))
 
         self._config["keep_prev"] = keep_prev
 
@@ -1897,7 +2734,7 @@ class MainWindow(QtWidgets.QMainWindow):
             for fmt in QtGui.QImageReader.supportedImageFormats()
         ]
         filters = self.tr("Image & Label files (%s)") % " ".join(
-            formats + ["*%s" % LabelFile.suffix]
+            formats
         )
         fileDialog = FileDialogPreview(self)
         fileDialog.setFileMode(FileDialogPreview.ExistingFile)
@@ -1909,8 +2746,27 @@ class MainWindow(QtWidgets.QMainWindow):
         fileDialog.setViewMode(FileDialogPreview.Detail)
         if fileDialog.exec_():
             fileName = fileDialog.selectedFiles()[0]
+            if fileName.find('json')!=-1:
+                self.errorMessage(
+                    self.tr("Error: opening json file."), self.tr("<b>%s</b>") % filename
+                )
+                return False
             if fileName:
-                self.loadFile(fileName)
+                if fileName[-9:] == 'color.jpg':
+                    filenameRGB = fileName
+                    if osp.exists(filenameRGB[:-9] + 'depth.png'):
+                        filenameDepth = filenameRGB[:-9] + 'depth.png'
+                    else:
+                        filenameDepth = None
+
+                elif fileName[-9:] == 'depth.png':
+                    filenameDepth = fileName
+                    if osp.exists(filenameDepth[:-9] + 'color.jpg'):
+                        filenameRGB = filenameDepth[:-9] + 'color.jpg'
+                    else:
+                        filenameRGB = None
+                self.loadFileSelect(filenameRGB, filenameDepth)
+
 
     def changeOutputDirDialog(self, _value=False):
         default_output_dir = self.output_dir
@@ -1950,6 +2806,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.fileListWidget.repaint()
 
     #保存文件系列函数，要同时保存两张图片对应的json？
+    # TODO 保存文件函数，要保存成xxxxxxlabel，格式符合文档
     def saveFile(self, _value=False):
         assert not self.image.isNull(), "cannot save empty image"
         if self.labelFile:
@@ -2000,7 +2857,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return filename
 
     def _saveFile(self, filename):
-        if filename and self.saveLabels(filename):
+        if filename and self.saveLabels(filename,self.saveMode):
             self.addRecentFile(filename)
             self.setClean()
 
@@ -2010,7 +2867,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.resetState()
         self.setClean()
         self.toggleActions(False)
-        self.canvas.setEnabled(False)
+        self.canvasLeft.setEnabled(False)
         self.actions.saveAs.setEnabled(False)
 
     def getLabelFile(self):
@@ -2084,6 +2941,11 @@ class MainWindow(QtWidgets.QMainWindow):
         return QtWidgets.QMessageBox.critical(
             self, title, "<p><b>%s</b></p>%s" % (title, message)
         )
+    
+    def warningMessage(self, title, message):
+        return QtWidgets.QMessageBox.warning(
+            self, title, "<p><b>%s</b></p>%s" % (title, message)
+        )
 
     def currentPath(self):
         return osp.dirname(str(self.filename)) if self.filename else "."
@@ -2092,42 +2954,62 @@ class MainWindow(QtWidgets.QMainWindow):
         self._config["keep_prev"] = not self._config["keep_prev"]
 
     def removeSelectedPoint(self):
-        self.canvas.removeSelectedPoint()
-        self.canvas.update()
-        if not self.canvas.hShape.points:
-            self.canvas.deleteShape(self.canvas.hShape)
-            self.remLabels([self.canvas.hShape])
+        self.canvasLeft.removeSelectedPoint()
+        self.canvasLeft.update()
+        if not self.canvasLeft.hShape.points:
+            self.canvasLeft.deleteShape(self.canvasLeft.hShape)
+            self.remLabels([self.canvasLeft.hShape])
             self.setDirty()
             if self.noShapes():
                 for action in self.actions.onShapesPresent:
                     action.setEnabled(False)
 
-
+    #FIXME 删除有bug
    #对于shape的修改都要两个窗口复制，这是删除所选shape
     def deleteSelectedShape(self):
-        yes, no = QtWidgets.QMessageBox.Yes, QtWidgets.QMessageBox.No
-        msg = self.tr(
-            "You are about to permanently delete {} polygons, "
-            "proceed anyway?"
-        ).format(len(self.canvas.selectedShapes))
-        if yes == QtWidgets.QMessageBox.warning(
-            self, self.tr("Attention"), msg, yes | no, yes
-        ):
-            self.remLabels(self.canvas.deleteSelected())
-            self.setDirty()
-            if self.noShapes():
-                for action in self.actions.onShapesPresent:
-                    action.setEnabled(False)
+        if self.nowFocus=='RGB':
+            yes, no = QtWidgets.QMessageBox.Yes, QtWidgets.QMessageBox.No
+            msg = self.tr(
+                "You are about to permanently delete {} polygons, "
+                "proceed anyway?"
+            ).format(len(self.canvasLeft.selectedShapes))
+            if yes == QtWidgets.QMessageBox.warning(
+                self, self.tr("Attention"), msg, yes | no, yes
+            ):
+
+                self.remLabels(self.canvasLeft.deleteSelected())
+                self.setDirty()
+                if self.noShapes():
+                    for action in self.actions.onShapesPresent:
+                        action.setEnabled(False)
+        else:
+            yes, no = QtWidgets.QMessageBox.Yes, QtWidgets.QMessageBox.No
+            msg = self.tr(
+                "You are about to permanently delete {} polygons, "
+                "proceed anyway?"
+            ).format(len(self.canvasRight.selectedShapes))
+            if yes == QtWidgets.QMessageBox.warning(
+                    self, self.tr("Attention"), msg, yes | no, yes
+            ):
+
+                self.remLabels(self.canvasRight.deleteSelected())
+                self.setDirty()
+                if self.noShapes():
+                    for action in self.actions.onShapesPresent:
+                        action.setEnabled(False)
 
     def copyShape(self):
-        self.canvas.endMove(copy=True)
-        for shape in self.canvas.selectedShapes:
-            self.addLabel(shape)
-        self.labelList.clearSelection()
+        self.canvasLeft.endMove(copy=True)
+        for shape in self.canvasLeft.selectedShapes:
+            self.addLabelColor(shape)
+        for shape in self.canvasRight.selectedShapes:
+            self.addLabelDepth(shape)
+        self.labelListColor.clearSelection()
+        self.labelListDepth.clearSelection()
         self.setDirty()
 
     def moveShape(self):
-        self.canvas.endMove(copy=False)
+        self.canvasLeft.endMove(copy=False)
         self.setDirty()
 
     def openDirDialog(self, _value=False, dirpath=None):
@@ -2151,7 +3033,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 | QtWidgets.QFileDialog.DontResolveSymlinks,
             )
         )
-        self.importDirImages(targetDirPath)
+        self.importDirImagesRGB(targetDirPath)
 
     @property
     def imageList(self):
@@ -2177,7 +3059,9 @@ class MainWindow(QtWidgets.QMainWindow):
             if self.output_dir:
                 label_file_without_path = osp.basename(label_file)
                 label_file = osp.join(self.output_dir, label_file_without_path)
-            item = QtWidgets.QListWidgetItem(file)
+            fileBasename = osp.basename(file)
+            self.lastOpenDir = file.replace(fileBasename, "")
+            item = QtWidgets.QListWidgetItem(fileBasename)
             item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
             if QtCore.QFile.exists(label_file) and LabelFile.is_label_file(
                 label_file
@@ -2195,6 +3079,40 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
     #导入一个dir的图片，这个可以改，来读取深度和普通
+    #TODO 2222222222222222222222导入一个dir的图片
+    def importDirImagesRGB(self, dirpath, pattern=None, load=True):
+        self.actions.openNextImg.setEnabled(True)
+        self.actions.openPrevImg.setEnabled(True)
+
+        if not self.mayContinue() or not dirpath:
+            return
+
+        self.lastOpenDir = dirpath
+        self.filename = None
+        self.fileListWidget.clear()
+        for filename in self.scanAllImages(dirpath):
+            a=filename.find('color')
+            if filename.find('color')!=-1:
+                if pattern and pattern not in filename:
+                    continue
+                RGB_file = osp.splitext(filename)[0]
+                label_file = RGB_file[:RGB_file.find('color')]+ "label.json"
+                if self.output_dir:
+                    label_file_without_path = osp.basename(label_file)
+                    label_file = osp.join(self.output_dir, label_file_without_path)
+                item = QtWidgets.QListWidgetItem(os.path.basename(filename))  # only show the basename path
+                # item = QtWidgets.QListWidgetItem(filename)  
+                item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                if QtCore.QFile.exists(label_file) and LabelFile.is_label_file(
+                    label_file
+                ):
+                    item.setCheckState(Qt.Checked)
+                else:
+                    item.setCheckState(Qt.Unchecked)
+                self.fileListWidget.addItem(item)
+        self.openNextImg(load=load)
+
+
     def importDirImages(self, dirpath, pattern=None, load=True):
         self.actions.openNextImg.setEnabled(True)
         self.actions.openPrevImg.setEnabled(True)

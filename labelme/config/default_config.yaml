@@ -12,7 +12,7 @@ label_flags: null
 labels: null
 file_search: null
 sort_labels: true
-validate_label: null
+validate_label: "exact"
 
 default_shape_color: [0, 255, 0]
 shape_color: auto  # null, 'auto', 'manual'
@@ -28,7 +28,7 @@ shape:
   select_line_color: [255, 255, 255, 255]
   select_fill_color: [0, 255, 0, 155]
   hvertex_fill_color: [255, 255, 255, 255]
-  point_size: 8
+  point_size: 20
 
 # main
 flag_dock:
@@ -41,7 +41,12 @@ label_dock:
   closable: true
   movable: true
   floatable: true
-shape_dock:
+shape_dockColor:
+  show: true
+  closable: true
+  movable: true
+  floatable: true
+shape_dockDepth:
   show: true
   closable: true
   movable: true
@@ -57,15 +62,21 @@ info_dock:
   movable: true
   floatable: true
 # label_dialog
-show_label_text_field: true
+show_label_text_field: false
 label_completion: startswith
 fit_to_content:
   column: true
   row: false
 
-# canvas
+# canvass
 epsilon: 10.0
-canvas:
+canvasLeft:
+  # None: do nothing
+  # close: close polygon
+  double_click: close
+  # The max number of edits we can undo
+  num_backups: 10
+canvasRight:
   # None: do nothing
   # close: close polygon
   double_click: close
@@ -74,8 +85,7 @@ canvas:
 
 shortcuts:
   close: Ctrl+W
-  open_RGB: Ctrl+O
-  open_Depth: Ctrl+Alt+D
+  open: Ctrl+O
   open_Both: Ctrl+B
   open_dir: Ctrl+U
   quit: Ctrl+Q
@@ -102,6 +112,7 @@ shortcuts:
   edit_polygon: Ctrl+J
   delete_polygon: Delete
   duplicate_polygon: Ctrl+D
+  Sync_polygon: Ctrl+alt+D
   copy_polygon: Ctrl+C
   paste_polygon: Ctrl+V
   undo: Ctrl+Z

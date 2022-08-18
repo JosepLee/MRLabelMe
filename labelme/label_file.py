@@ -37,7 +37,8 @@ class LabelFile(object):
     suffix = ".json"
 
     def __init__(self, filename=None):
-        self.shapes = []
+        self.shapesRGB = []
+        self.shapesDepth=[]
         self.imagePath = None
         self.imageData = None
         if filename is not None:
@@ -70,12 +71,10 @@ class LabelFile(object):
     def load(self, filename):
         keys = [
             "version",
-            "imageData",
             "imagePath",
-            "shapes",  # polygonal annotations
+            "shapes_rgb",
+            "shapes_depth",# polygonal annotations
             "flags",  # image level flags
-            "imageHeight",
-            "imageWidth",
         ]
         shape_keys = [
             "label",
@@ -103,22 +102,22 @@ class LabelFile(object):
                     )
                 )
 
-            if data["imageData"] is not None:
-                imageData = base64.b64decode(data["imageData"])
-                if PY2 and QT4:
-                    imageData = utils.img_data_to_png_data(imageData)
-            else:
+            # if data["imageData"] is not None:
+            #     imageData = base64.b64decode(data["imageData"])
+            #     if PY2 and QT4:
+            #         imageData = utils.img_data_to_png_data(imageData)
+            # else:
                 # relative path from label file to relative path from cwd
-                imagePath = osp.join(osp.dirname(filename), data["imagePath"])
-                imageData = self.load_image_file(imagePath)
+            imagePath = osp.join(osp.dirname(filename), data["imagePath"]+"_color.jpg")
+            imageData = self.load_image_file(imagePath)
             flags = data.get("flags") or {}
             imagePath = data["imagePath"]
-            self._check_image_height_and_width(
-                base64.b64encode(imageData).decode("utf-8"),
-                data.get("imageHeight"),
-                data.get("imageWidth"),
-            )
-            shapes = [
+            # self._check_image_height_and_width(
+            #     base64.b64encode(imageData).decode("utf-8"),
+            #     data.get("imageHeight"),
+            #     data.get("imageWidth"),
+            # )
+            shapesRGB = [
                 dict(
                     label=s["label"],
                     points=s["points"],
@@ -129,7 +128,21 @@ class LabelFile(object):
                         k: v for k, v in s.items() if k not in shape_keys
                     },
                 )
-                for s in data["shapes"]
+                for s in data["shapes_rgb"]
+            ]
+
+            shapesDepth = [
+                dict(
+                    label=s["label"],
+                    points=s["points"],
+                    shape_type=s.get("shape_type", "polygon"),
+                    flags=s.get("flags", {}),
+                    group_id=s.get("group_id"),
+                    other_data={
+                        k: v for k, v in s.items() if k not in shape_keys
+                    },
+                )
+                for s in data["shapes_depth"]
             ]
         except Exception as e:
             raise LabelFileError(e)
@@ -141,7 +154,8 @@ class LabelFile(object):
 
         # Only replace data after everything is loaded.
         self.flags = flags
-        self.shapes = shapes
+        self.shapesRGB = shapesRGB
+        self.shapesDepth=shapesDepth
         self.imagePath = imagePath
         self.imageData = imageData
         self.filename = filename
@@ -164,10 +178,12 @@ class LabelFile(object):
             imageWidth = img_arr.shape[1]
         return imageHeight, imageWidth
 
+    #TODO 保存文件的最底层函数
     def save(
         self,
         filename,
-        shapes,
+        shapes_rgb,
+        shapes_depth,
         imagePath,
         imageHeight,
         imageWidth,
@@ -187,11 +203,9 @@ class LabelFile(object):
         data = dict(
             version=__version__,
             flags=flags,
-            shapes=shapes,
+            shapes_rgb=shapes_rgb,
+            shapes_depth=shapes_depth,
             imagePath=imagePath,
-            imageData=imageData,
-            imageHeight=imageHeight,
-            imageWidth=imageWidth,
         )
         for key, value in otherData.items():
             assert key not in data

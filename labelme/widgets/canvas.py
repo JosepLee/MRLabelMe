@@ -5,7 +5,7 @@ from qtpy import QtWidgets
 from labelme import QT5
 from labelme.shape import Shape
 import labelme.utils
-
+from PyQt5.QtGui import QPainter,QFont,QColor
 
 # TODO(unknown):
 # - [maybe] Find optimal epsilon value.
@@ -26,6 +26,7 @@ class Canvas(QtWidgets.QWidget):
     scrollRequest = QtCore.Signal(int, int)
     newShape = QtCore.Signal()
     selectionChanged = QtCore.Signal(list)
+    focusChanged = QtCore.Signal()
     shapeMoved = QtCore.Signal()
     drawingPolygon = QtCore.Signal(bool)
     vertexSelected = QtCore.Signal(bool)
@@ -39,6 +40,7 @@ class Canvas(QtWidgets.QWidget):
     _fill_drawing = False
 
     def __init__(self, *args, **kwargs):
+        self._shapes=[]
         self.epsilon = kwargs.pop("epsilon", 10.0)
         self.double_click = kwargs.pop("double_click", "close")
         if self.double_click not in [None, "close"]:
@@ -89,6 +91,8 @@ class Canvas(QtWidgets.QWidget):
         self.setMouseTracking(True)
         self.setFocusPolicy(QtCore.Qt.WheelFocus)
 
+    def getFocus(self):
+        return self.focusName
     def fillDrawing(self):
         return self._fill_drawing
 
@@ -111,7 +115,7 @@ class Canvas(QtWidgets.QWidget):
         ]:
             raise ValueError("Unsupported createMode: %s" % value)
         self._createMode = value
-
+#FIXME store shape这个函数有问题
     def storeShapes(self):
         shapesBackup = []
         for shape in self.shapes:
@@ -352,6 +356,7 @@ class Canvas(QtWidgets.QWidget):
         else:
             pos = self.transformPos(ev.posF())
         if ev.button() == QtCore.Qt.LeftButton:
+            self.focusChanged.emit()
             if self.drawing():
                 if self.current:
                     # Add point to existing shape.
@@ -489,7 +494,20 @@ class Canvas(QtWidgets.QWidget):
         """Select the first shape created which contains this point."""
         if self.selectedVertex():  # A vertex is marked for selection.
             index, shape = self.hVertex, self.hShape
-            shape.highlightVertex(index, shape.MOVE_VERTEX)
+            # shape.highlightVertex(index, shape.MOVE_VERTEX)
+            #FIXME 這個地方的内容可以讓vertex被選擇時也對應到label上
+            if shape not in self.selectedShapes:
+                if multiple_selection_mode:
+                    self.selectionChanged.emit(
+                        self.selectedShapes + [shape]
+                    )
+                else:
+                    self.selectionChanged.emit([shape])
+                self.hShapeIsSelected = False
+            else:
+                self.hShapeIsSelected = True
+            self.calculateOffsets(point)
+            return
         else:
             for shape in reversed(self.shapes):
                 if self.isVisible(shape) and shape.containsPoint(point):
@@ -605,6 +623,47 @@ class Canvas(QtWidgets.QWidget):
         if not self.boundedMoveShapes(shapes, point - offset):
             self.boundedMoveShapes(shapes, point + offset)
 
+    def count_points_center(self):
+        points=self._shapes
+        pointt=self.shapes.copy()
+
+        shape=[]
+        if len(pointt)!=0:
+            for d in pointt:
+
+
+                label = d.label
+                point = d.points
+                if point == None:
+                    continue
+                x_val=[i.x() for i in point]
+                y_val=[i.y() for i in point]
+
+                x_min = min(x_val)
+                x_max = max(x_val)
+                y_min = min(y_val)
+                y_max = max(y_val)
+                x = int((x_min + x_max) / 2)
+                y = int((y_min + y_max) / 2)
+                shape.append({"label": label, "x": int(x - 20), "y": y,"select":d.selected})
+        else:
+            for d in points:
+                label=d["label"]
+                point=d["points"]
+                if point==None:
+                    continue
+                x_val=[i[0] for i in point]
+                y_val=[i[1] for i in point]
+
+                x_min=min(x_val)
+                x_max=max(x_val)
+                y_min=min(y_val)
+                y_max=max(y_val)
+                x=int((x_min+x_max)/2)
+                y=int((y_min+y_max)/2)
+                shape.append({"label":label,"x":int(x-20),"y":y,"select":d.selected})
+        return shape
+
     def paintEvent(self, event):
         if not self.pixmap:
             return super(Canvas, self).paintEvent(event)
@@ -619,19 +678,26 @@ class Canvas(QtWidgets.QWidget):
         p.translate(self.offsetToCenter())
 
         p.drawPixmap(0, 0, self.pixmap)
+
+        selectedshape=[]
+
         Shape.scale = self.scale
         for shape in self.shapes:
             if (shape.selected or not self._hideBackround) and self.isVisible(
                 shape
             ):
+
                 shape.fill = shape.selected or shape == self.hShape
                 shape.paint(p)
+
         if self.current:
             self.current.paint(p)
             self.line.paint(p)
+
         if self.selectedShapesCopy:
             for s in self.selectedShapesCopy:
                 s.paint(p)
+
 
         if (
             self.fillDrawing()
@@ -643,6 +709,22 @@ class Canvas(QtWidgets.QWidget):
             drawing_shape.addPoint(self.line[1])
             drawing_shape.fill = True
             drawing_shape.paint(p)
+
+        #LZX 画label
+        p.setFont(QFont("simsun",15,QFont.Bold))
+        shapedda=self.count_points_center()
+        for d in shapedda:
+            label=d["label"]
+            x=d['x']
+            y=d['y']
+            selec=d['select']
+            # rect = QtCore.QRect(x-20, y-10, len(label)*10,20)
+            # p.fillRect(rect,color)
+            if not selec:
+                p.setPen(QColor(0, 255, 0))
+            else:
+                p.setPen(QColor(255, 255, 255))
+            p.drawText(x, y, label)
 
         p.end()
 
