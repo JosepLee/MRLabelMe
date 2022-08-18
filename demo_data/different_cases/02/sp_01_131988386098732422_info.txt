@@ -1,8 +1,0 @@
-PatientId:  01
-
-PatientHeight:  170
-
-PatientWeight:  77
-
-PatientPose:  HFS
-
